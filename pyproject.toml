@@ -1,0 +1,20 @@
+[project]
+name = "diffsinger"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "librosa>=0.11.0",
+    "textgrid>=1.6.1",
+    "torch>=2.11.0",
+    "torchaudio>=2.11.0",
+    "torchvision>=0.26.0",
+]
+
+[[tool.uv.index]]
+url = "https://pypi.org/simple/"
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cu128"
+default = true
