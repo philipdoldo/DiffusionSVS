@@ -1,0 +1,24 @@
+[audio]
+sample_rate = 24000
+hop_size = 128
+window_size = 512
+n_mels = 80
+min_freq = 40.0 # Hz
+max_freq = 12000.0 # Hz
+mel_center = true # default in librosa
+mel_log_clip = 1e-5
+
+[f0]
+extractor = "parselmouth"   # "parselmouth" | "harvest"
+f0_min    = 65.0
+f0_max    = 1100.0
+
+[data]
+raw_data_dir    = "/home/phil/DiffSinger/popcs"
+save_dir = "/home/phil/DiffSinger/binarized_data"
+test_songs  = ["popcs-说散就散", "popcs-隐形的翅膀"]
+val_songs = ["popcs-夏天的风", "popcs-稻香"]  # your choice, just not the test songs (DiffSinger effectively made test and val sets equal to each other, I won't do that)
+
+[model]
+pad_token_id = 0 # maybe add a sanity check in training code that it matches with the vocab.json from the dataset that you end up loading
+vocab_size = 60

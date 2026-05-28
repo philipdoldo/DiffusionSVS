@@ -1,100 +1,56 @@
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
-
-from modules.commons.common_layers import (
-    NormalInitEmbedding as Embedding,
-    XavierUniformInitLinear as Linear,
-)
-from modules.fastspeech.tts_modules import FastSpeech2Encoder, mel2ph_to_dur
-from utils.hparams import hparams
-from utils.phoneme_utils import PAD_INDEX
 
 
-class FastSpeech2Acoustic(nn.Module):
-    def __init__(self, vocab_size):
+def mel2ph_to_dur(mel2ph, P, max_dur=None):
+    """
+    `mel2ph` has shape (B, T)
+    `P` is an integer corresponding to how long the phoneme sequence of `txt_tokens` is
+    This function returns a shape (B, P) tensor `dur` where index i of the phoneme sequence is the number of mel frames that
+    position i of `txt_tokens` lasted for, so basically just a tensor of the durations of each phoneme in `txt_tokens`. 
+    
+    The durations tensor `dur` is used in the encoder to create a duration embedding by passing `dur` into a linear layer,
+    the duration embedding is provided to the phoneme text encoder as conditioning.
+    """
+    B, _ = mel2ph.shape
+    dur = mel2ph.new_zeros(B, P).scatter_add(1, mel2ph, torch.ones_like(mel2ph))
+    if max_dur is not None:
+        dur = dur.clamp(max=max_dur)
+    return dur # shape (B, P)
+
+
+class MusicScoreEncoder(nn.module):
+
+    def __init__(self, config):
         super().__init__()
-        self.txt_embed = Embedding(vocab_size, hparams['hidden_size'], PAD_INDEX)
-        self.use_lang_id = hparams.get('use_lang_id', False)
-        if self.use_lang_id:
-            self.lang_embed = Embedding(hparams['num_lang'] + 1, hparams['hidden_size'], padding_idx=0)
-        self.dur_embed = Linear(1, hparams['hidden_size'])
-        self.encoder = FastSpeech2Encoder(
-            hidden_size=hparams['hidden_size'], num_layers=hparams['enc_layers'],
-            ffn_kernel_size=hparams['enc_ffn_kernel_size'], ffn_act=hparams['ffn_act'],
-            dropout=hparams['dropout'], num_heads=hparams['num_heads'],
-            use_pos_embed=hparams['use_pos_embed'], rel_pos=hparams.get('rel_pos', False), 
-            use_rope=hparams.get('use_rope', False), rope_interleaved=hparams.get('rope_interleaved', True)
-        )
+        self.txt_embed = nn.Embedding(config['vocab_size'], config['embedding_dim'], config['pad_token_id'])
+        self.dur_embed = nn.Linear(1, config['embedding_dim'])
+    
 
-        self.pitch_embed = Linear(1, hparams['hidden_size'])
-        self.variance_embed_list = []
-        self.use_energy_embed = hparams.get('use_energy_embed', False)
-        self.use_breathiness_embed = hparams.get('use_breathiness_embed', False)
-        self.use_voicing_embed = hparams.get('use_voicing_embed', False)
-        self.use_tension_embed = hparams.get('use_tension_embed', False)
-        if self.use_energy_embed:
-            self.variance_embed_list.append('energy')
-        if self.use_breathiness_embed:
-            self.variance_embed_list.append('breathiness')
-        if self.use_voicing_embed:
-            self.variance_embed_list.append('voicing')
-        if self.use_tension_embed:
-            self.variance_embed_list.append('tension')
+    def forward(self, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask):
+        """
+        `txt_tokens` has shape (B, P)  --  where B is batch size and P is the number of phonemes in the sequence
+            contains sequences of phoneme token ids (corresponding to the phonemes used in an audio file)
+        `mel2ph` has shape (B, T)  --  where T is the number of mel frames (when constructing the mel-spectrogram, time was discretized into T mel frames)
+            `mel2ph` on a given mel frame contains the `txt_token` index corresponding to the phoneme used on in the audio, it is important to note that
+            this is not the token id but the index into `txt_tokens`, this will allow for the same token id to potentially receive different positional
+            information if the same token is used multiple times in `txt_tokens`
+        `f0` has shape (B, T)
+            contains the fundamental frequency during each mel frame (interpolation was used to smooth across unvoiced segments, see data preprocessing/binarization code)
+        `uv` has shape (B, T)
+            boolean mask which is True when the audio was unvoiced, corresponds to where the preinterpolated f0 was zero. False otherwise.
+        """
 
-        self.use_variance_embeds = len(self.variance_embed_list) > 0
-        if self.use_variance_embeds:
-            self.variance_embeds = nn.ModuleDict({
-                v_name: Linear(1, hparams['hidden_size'])
-                for v_name in self.variance_embed_list
-            })
+        txt_embed = self.txt_embed(txt_tokens) # (B, P, embedding_dim)
+        dur = mel2ph_to_dur(mel2ph, txt_tokens.shape[1]).float() # (B, P)
+        dur_embed = self.dur_embed(dur[:, :, None]) # (B, P, embedding_dim) -- (B, P, 1) x (1, embedding_dim) ### each row is the same embedding weights scaled by the duration (the same bias is added to each row)
 
-        self.use_key_shift_embed = hparams.get('use_key_shift_embed', False)
-        if self.use_key_shift_embed:
-            self.key_shift_embed = Linear(1, hparams['hidden_size'])
+        # TODO below here -----------------
+        # next, they do some transformer-based encoding of the text with positional info and padding taken into account, this makes sense at a high level
+        # seems like i should put self.txt_embed inside the encoder and just call it self.txt_encoder or something, seems simpler, feed in padding mask too
+        encoder_out = self.encoder(txt_embed, extra_embed, txt_tokens == 0) # takes dur_emb as input, maybe rename some stuff
+        # see https://github.com/openvpi/DiffSinger/blob/main/modules/fastspeech/tts_modules.py#L407 for phoneme text encoder
 
-        self.use_speed_embed = hparams.get('use_speed_embed', False)
-        if self.use_speed_embed:
-            self.speed_embed = Linear(1, hparams['hidden_size'])
-
-        self.use_spk_id = hparams['use_spk_id']
-        if self.use_spk_id:
-            self.spk_embed = Embedding(hparams['num_spk'], hparams['hidden_size'])
-
-    def forward(
-            self, txt_tokens, mel2ph, f0,
-            key_shift=None, speed=None,
-            spk_embed_id=None, languages=None,
-            **kwargs
-    ):
-        txt_embed = self.txt_embed(txt_tokens)
-        dur = mel2ph_to_dur(mel2ph, txt_tokens.shape[1]).float()
-        dur_embed = self.dur_embed(dur[:, :, None])
-        if self.use_lang_id:
-            lang_embed = self.lang_embed(languages)
-            extra_embed = dur_embed + lang_embed
-        else:
-            extra_embed = dur_embed
-        encoder_out = self.encoder(txt_embed, extra_embed, txt_tokens == 0)
-
-        encoder_out = F.pad(encoder_out, [0, 0, 1, 0])
+        #encoder_out = F.pad(encoder_out, [0, 0, 1, 0]) # I don't need this because i 0-index the mel2ph
         mel2ph_ = mel2ph[..., None].repeat([1, 1, encoder_out.shape[-1]])
-        condition = torch.gather(encoder_out, 1, mel2ph_)
-
-        if self.use_spk_id:
-            spk_mix_embed = kwargs.get('spk_mix_embed')
-            if spk_mix_embed is not None:
-                spk_embed = spk_mix_embed
-            else:
-                spk_embed = self.spk_embed(spk_embed_id)[:, None, :]
-            condition += spk_embed
-
-        f0_mel = (1 + f0 / 700).log()
-        pitch_embed = self.pitch_embed(f0_mel[:, :, None])
-        condition += pitch_embed
-
-        condition = self.forward_variance_embedding(
-            condition, key_shift=key_shift, speed=speed, **kwargs
-        )
-
-        return condition
+        # continue around here https://github.com/openvpi/DiffSinger/blob/main/modules/fastspeech/acoustic_encoder.py#L100
