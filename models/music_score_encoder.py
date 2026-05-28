@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
+import math
 
 def mel2ph_to_dur(mel2ph, P, max_dur=None):
     """
@@ -17,6 +18,44 @@ def mel2ph_to_dur(mel2ph, P, max_dur=None):
     if max_dur is not None:
         dur = dur.clamp(max=max_dur)
     return dur # shape (B, P)
+
+class SinusoidalPositionalEmbedding(nn.Module):
+    def __init__(self, embedding_dim=256, base=10000):
+        super().__init__()
+        if embedding_dim % 2 != 0:
+            raise ValueError(f"Embedding embedding dimension {embedding_dim=} must be a multiple of 2")
+        self.embedding_dim = embedding_dim
+        self.base = base # e.g. 10000
+    
+    def forward(self, seq_len: int, device):
+        half_dim = self.embedding_dim // 2
+        i = torch.arange(half_dim, device=device) # shape (embedding_dim//2)
+        freqs = 1/self.base ** (i / (half_dim - 1)) # shape (embedding_dim//2) # e.g. frequencies ranging from 1 down to 1/10000
+        positions = torch.arange(seq_len, device=device) # shape (seq_len)
+        angles = positions[:, None] * freqs[None, :] # shape (seq_len, embedding_dim//2)
+        return torch.cat([angles.sin(), angles.cos()], dim=-1) # shape (seq_len, embedding_dim)
+
+class PhonemeTextEncoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.token_embbeddings = nn.Embedding(config['vocab_size'], config['embedding_dim'], config['pad_token_id'])
+        self.positional_embeddings = SinusoidalPositionalEmbedding(embedding_dim=config['embedding_dim'], base=config['sinusoidal_base'])
+
+    
+    def forward(self, token_ids, cond, ph_padding_mask):
+        """
+        B is batch size
+        P is phoneme sequence length
+        `token_ids` has shape (B, P) and contains the token ids corresponding to the phonemes
+        `cond` has shape (B, P, embedding_dim) -- embeddings to condition on -- in practice, this will be the phoneme duration embeddings created in the music score encoder forward pass
+        """
+        tok_embs = self.token_embeddings(token_ids) # (B, P, embedding_dim)
+        B, P, embedding_dim = token_ids.shape
+        pos_embs = self.positional_embeddings(seq_len=P, device=tok_embs.dvice) # not using RoPE
+        x = tok_embs * math.sqrt(embedding_dim) # scale embeddings by sqrt(d)
+        x = x + cond + pos_embs
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        # TODO attention and stuff? everything you did so far takes you roughly up to here https://github.com/openvpi/DiffSinger/blob/main/modules/fastspeech/tts_modules.py#L408
 
 
 class MusicScoreEncoder(nn.module):
@@ -41,7 +80,7 @@ class MusicScoreEncoder(nn.module):
             boolean mask which is True when the audio was unvoiced, corresponds to where the preinterpolated f0 was zero. False otherwise.
         """
 
-        txt_embed = self.txt_embed(txt_tokens) # (B, P, embedding_dim)
+        txt_embed = self.txt_embed(txt_tokens) # (B, P, embedding_dim) # going to remove this since we'll use PhonemeTextEncoder which has the embedding layer inside of it
         dur = mel2ph_to_dur(mel2ph, txt_tokens.shape[1]).float() # (B, P)
         dur_embed = self.dur_embed(dur[:, :, None]) # (B, P, embedding_dim) -- (B, P, 1) x (1, embedding_dim) ### each row is the same embedding weights scaled by the duration (the same bias is added to each row)
 
