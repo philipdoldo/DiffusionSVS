@@ -16,7 +16,7 @@
 				text = "uo"
 
     We handle these cases by replacing the empty string with the silence token SP if the interval isn't the first or last interval. If it is,
-    then we replace the empty string with BOS if it is the first interval and EOS if it is the last interval.
+    then we replace the empty string with <BOS> if it is the first interval and <EOS> if it is the last interval.
 """
 import numpy as np
 import librosa
@@ -30,50 +30,15 @@ from pathlib import Path
 from tqdm import tqdm
 
 SILENCE_TOKEN = "SP"
+BOS_TOKEN = "<BOS>"
+EOS_TOKEN = "<EOS>"
 
 class BinarizationError(Exception): # TODO delete this
     pass
 
 
-def _fill_gaps(mel2ph: np.ndarray) -> np.ndarray:
-    """
-    When building mel2ph we skip TextGrid intervals with emptry-string text fields, e.g. interval 53 in the example below:
-
-            intervals [52]:
-				xmin = 8.14
-				xmax = 8.61
-				text = "ou"
-			intervals [53]:
-				xmin = 8.61
-				xmax = 9.59
-				text = ""
-			intervals [54]:
-				xmin = 9.59
-				xmax = 9.86
-				text = "uo"
-
-    Since we do not have a phoneme there
-    leaving those frames as 0. Since 0 is the padding sentinel we cannot leave
-    real frames as 0, so we fill them with the nearest non-zero neighbor.
-    Forward pass handles trailing gaps, backward pass handles leading gaps.
-
-    THIS CODE IS A MESS
-    """
-    filled = mel2ph.copy()
-    val = 0
-    for i in range(len(filled)):
-        if filled[i] > 0:
-            val = filled[i]
-        elif val > 0:
-            filled[i] = val
-    val = 0
-    for i in range(len(filled) - 1, -1, -1):
-        if filled[i] > 0:
-            val = filled[i]
-        elif val > 0:
-            filled[i] = val
-    return filled
-
+def _is_nondecreasing(arr):
+    return np.all(np.diff(arr) >= 0)
 
 def process_utterance(
     wav_path:       str,
@@ -130,8 +95,7 @@ def process_utterance(
     f0_raw = np.array([pitch.get_value_at_time(t) or 0.0 for t in frame_times], dtype=np.float32)
     uv = np.logical_or(f0_raw == 0.0, np.isnan(f0_raw))  # True = unvoiced
     if np.all(uv):
-        assert False, "TODO" # TODO
-        raise BinarizationError("all-unvoiced f0")
+        raise ValueError(f"All frames of f0 are unvoiced, {wav_path=}, {tg_path=}")
 
     f0_raw = np.where(np.logical_not(uv), np.clip(f0_raw, f0_config["f0_min"], f0_config["f0_max"]), f0_raw) # this might not be needed since it might already be clipped, but doing it just in case
     f0_log = np.where(np.logical_not(uv), np.log(f0_raw + 1e-8), 0.0)
@@ -147,14 +111,14 @@ def process_utterance(
     tier = tg.tiers[1] # we use the second tier
 
     # If an interval has `text = ""` (i.e. no phoneme), then we map it to the silence phoneme SP
-    # unless it is the first or last interval in which case we map it to BOS or EOS, respectively.
+    # unless it is the first or last interval in which case we map it to <BOS> or <EOS>, respectively.
     tier_list = list(tier) # wrap in list so length can be computed
     intervals = [
         (
             interval.minTime,
             interval.maxTime,
-            "BOS" if i == 0 and not interval.mark.strip()
-            else "EOS" if i == len(tier_list) - 1 and not interval.mark.strip()
+            BOS_TOKEN if i == 0 and not interval.mark.strip()
+            else EOS_TOKEN if i == len(tier_list) - 1 and not interval.mark.strip()
             else interval.mark.strip() or SILENCE_TOKEN
         )
         for i, interval in enumerate(tier_list)
@@ -164,15 +128,19 @@ def process_utterance(
 
     starts = [int(np.round(start * audio_config["sample_rate"] / audio_config["hop_size"])) for start, _, _ in intervals]
     ends = starts[1:] + [T]
+
+    #print(f"{len(txt_tokens)=}, {len(starts)=}, {len(ends)=}, {T=}, {wav_path=}, {tg_path=}")
     assert starts[0] == 0, f"{starts=}"
 
     mel2ph = np.zeros(T, dtype=np.int32)
     for i, (s, e) in enumerate(zip(starts, ends)):
         mel2ph[s:e] = i # TODO check this #i + 1  # 1-based; 0 is the padding sentinel # TODO this seems stupid, fix this??
 
-    assert mel2ph.min() >= 1, "mel2ph contains zeros after gap fill" # TODO bad check
-    assert mel2ph.max() == len(txt_tokens), \
-        f"mel2ph.max() {mel2ph.max()} != len(txt_tokens) {len(txt_tokens)}"
+    #assert mel2ph.min() >= 1, "mel2ph contains zeros after gap fill" # TODO bad check
+    #assert mel2ph.max() == len(txt_tokens) - 1, f"mel2ph.max() {mel2ph.max()} != len(txt_tokens) {len(txt_tokens)} -- {len(txt_tokens)=}, {len(starts)=}, {len(ends)=}, {T=}, {wav_path=}, {tg_path=} -- {mel2ph=}, {txt_tokens=}, {starts=}, {ends=}" # TODO bad check, I added - 1
+
+    if (not _is_nondecreasing(starts)) or (not _is_nondecreasing(ends)) or (not _is_nondecreasing(mel2ph)) or (mel2ph.max() != len(txt_tokens) - 1):
+        raise BinarizationError # skip if the data isn't formatted properly, e.g. `popcs/popcs-爱你十分泪七分/0015.TextGrid` has final xmax of 11.819999999999993 but `/popcs/popcs-爱你十分泪七分/0015_wf0.wav` is only 11.42328798185941 seconds
 
     return {
         "mel":        log_mel,    # float32 (T, n_mels)
@@ -212,7 +180,6 @@ def binarize_split(
             except BinarizationError as e:
                 print(f"skipping {item_name}: {e}")
                 skipped.append(item_name)
-                assert False, "?????????" # TODO
                 continue
 
             grp = f.create_group(item_name)
@@ -232,7 +199,12 @@ def binarize_split(
             lengths.append(f[item_name]["mel"].shape[0])
 
     np.save(splits_dir / f"{split}_lengths.npy", np.array(lengths, dtype=np.int32))
-    json.dump(successful, open(splits_dir / f"{split}_items.json", "w", encoding="utf-8"))
+    #json.dump(successful, open(splits_dir / f"{split}_items.json", "w", encoding="utf-8"))
+    with open(splits_dir / f"{split}_items.json", "w", encoding="utf-8") as f:
+        json.dump(successful, f, ensure_ascii=False, indent=2)
+    
+    with open(splits_dir / f"{split}_skipped.json", "w", encoding="utf-8") as f:
+        json.dump(skipped, f, ensure_ascii=False, indent=2)
 
     print(f"{split}: {len(successful)} saved, {len(skipped)} skipped")
     if skipped:
@@ -246,10 +218,9 @@ if __name__ == "__main__":
 
     with open(args.config, "rb") as f:
         config = tomllib.load(f)
-    config = config['data']
 
-    raw_data_dir = Path(config["raw_data_dir"])
-    save_dir = Path(config["save_dir"])
+    raw_data_dir = Path(config["data"]["raw_data_dir"])
+    save_dir = Path(config["data"]["save_dir"])
 
     phoneme_to_idx = json.load(open(save_dir / "vocab.json", encoding="utf-8"))
     splits = json.load(open(save_dir / "splits.json", encoding="utf-8"))
