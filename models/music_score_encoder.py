@@ -34,12 +34,235 @@ class SinusoidalPositionalEmbedding(nn.Module):
         positions = torch.arange(seq_len, device=device) # shape (seq_len)
         angles = positions[:, None] * freqs[None, :] # shape (seq_len, embedding_dim//2)
         return torch.cat([angles.sin(), angles.cos()], dim=-1) # shape (seq_len, embedding_dim)
+    
+# class XavierUniformInitLinear(torch.nn.Linear):
+#     # TODO
+#     # copied from https://github.com/openvpi/DiffSinger/blob/main/modules/commons/common_layers.py#L29
+#     def __init__(
+#             self,
+#             in_features: int,
+#             out_features: int,
+#             *args,
+#             bias: bool = True,
+#             **kwargs
+#     ):
+#         super().__init__(in_features, out_features, *args, bias=bias, **kwargs)
+#         nn.init.xavier_uniform_(self.weight)
+#         if bias:
+#             nn.init.constant_(self.bias, 0.)
+
+# class TransformerFFNLayer(nn.Module):
+#     # TODO I think the design choice here is a bit weird
+#     # mostly copied from https://github.com/openvpi/DiffSinger/blob/main/modules/commons/common_layers.py#L120
+#     def __init__(self, hidden_size, filter_size, kernel_size=1, dropout=0., act='gelu'):
+#         super().__init__()
+#         self.kernel_size = kernel_size
+#         self.dropout = dropout
+#         self.act = act
+#         filter_size_1 = filter_size
+#         if self.act == 'relu':
+#             self.act_fn = nn.ReLU()
+#         elif self.act == 'gelu':
+#             self.act_fn = nn.GELU()
+#         elif self.act == 'swish':
+#             self.act_fn = nn.SiLU()
+#         else:
+#             raise ValueError(f'{act} is not a valid activation')
+#         self.ffn_1 = nn.Conv1d(hidden_size, filter_size_1, kernel_size, padding=kernel_size // 2)
+#         self.ffn_2 = XavierUniformInitLinear(filter_size, hidden_size)
+
+#     def forward(self, x):
+#         # x: B x T x C
+#         x = self.ffn_1(x.transpose(1, 2)).transpose(1, 2)
+#         x = x * self.kernel_size ** -0.5
+
+#         x = self.act_fn(x)
+#         x = F.dropout(x, self.dropout, training=self.training)
+#         x = self.ffn_2(x)
+#         return x
+    
+# class EncSALayer(nn.Module):
+#     # TODO
+#     # copied from https://github.com/openvpi/DiffSinger/blob/main/modules/commons/common_layers.py#L216
+#     def __init__(self, c, num_heads, dropout, attention_dropout=0.1,
+#                  relu_dropout=0.1, kernel_size=9, act='gelu'):
+#         super().__init__()
+#         self.dropout = dropout
+#         self.layer_norm1 = nn.LayerNorm(c)
+#         self.self_attn = nn.MultiheadAttention(c, num_heads, dropout=attention_dropout, bias=False, batch_first=False)
+#         self.layer_norm2 = nn.LayerNorm(c)
+#         self.ffn = TransformerFFNLayer(c, 4 * c, kernel_size=kernel_size, dropout=relu_dropout, act=act)
+
+#     def forward(self, x, encoder_padding_mask=None, **kwargs):
+#         layer_norm_training = kwargs.get('layer_norm_training', None)
+#         if layer_norm_training is not None:
+#             self.layer_norm1.training = layer_norm_training
+#             self.layer_norm2.training = layer_norm_training
+#         residual = x
+#         x = self.layer_norm1(x)
+
+#         x = x.transpose(0, 1)
+#         x, _, = self.self_attn(query=x, key=x, value=x, key_padding_mask=encoder_padding_mask)
+#         x = x.transpose(0, 1)
+        
+#         x = F.dropout(x, self.dropout, training=self.training)
+#         x = residual + x
+#         x = x * (1 - encoder_padding_mask.float())[..., None]
+
+#         residual = x
+#         x = self.layer_norm2(x)
+#         x = self.ffn(x)
+#         x = F.dropout(x, self.dropout, training=self.training)
+#         x = residual + x
+#         x = x * (1 - encoder_padding_mask.float())[..., None]
+#         return x
+
+
+
+
+def rmsnorm(x):
+    """
+    `x` has shape (B, L, d) and the RMS (which is just 2-norm scaled by 1/sqrt(d) in R^d) is computed for every vector of channels
+    No learnable parameters. I want to try rmsnorm since I used it in language models. 
+    """
+    rms = (x.pow(2).mean(dim=-1, keepdim=True) + 1e-8).sqrt() # shape (B, L, 1)
+    return (x / rms)
+
+def precompute_rotary_embeddings(seq_len, head_dim, base=10000):
+    # stride the channels
+    channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32)
+    inv_freq = 1.0 / (base ** (channel_range / head_dim))
+    # stride the time steps
+    t = torch.arange(seq_len, dtype=torch.float32)
+    # calculate the rotation frequencies at each (time, channel) pair
+    freqs = torch.outer(t, inv_freq)
+    cos, sin = freqs.cos(), freqs.sin()
+    #cos, sin = cos.bfloat16(), sin.bfloat16() # keep them in bfloat16
+    cos, sin = cos[None, :, None, :], sin[None, :, None, :] # add batch and head dims for later broadcasting
+    return cos, sin
+
+def apply_rotary_emb(x, cos, sin):
+    """
+    `cos` and `sin` each have shape [1, max_seq_len, 1, head_dim // 2]
+    `x` has shape [batch_size, seq_len, num_heads, head_dim]
+    """
+    assert x.ndim == 4  # multihead attention
+    d = x.shape[3] // 2 # head_dim // 2
+
+    # Truncate `cos` and `sin` to the input sequence length
+    input_seq_len = x.shape[1]
+    cos = cos[:, :input_seq_len, :, :]
+    sin = sin[:, :input_seq_len, :, :]
+
+    x1, x2 = x[..., :d], x[..., d:] # split up head dim into two halves
+    y1 = x1 * cos + x2 * sin # rotate pairs of dims (they rotate clockwise, arbitrary choice that I am copying)
+    y2 = x1 * (-sin) + x2 * cos
+    out = torch.cat([y1, y2], dim=3) # re-assemble
+    out = out.to(x.dtype) # ensure input/output dtypes match
+    return out
+
+class BidirectionalSelfAttention(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.Wq = nn.Linear(config.embed_dim, config.embed_dim, bias=False)
+        self.Wk = nn.Linear(config.embed_dim, config.embed_dim, bias=False)
+        self.Wv = nn.Linear(config.embed_dim, config.embed_dim, bias=False)
+        self.Wo = nn.Linear(config.embed_dim, config.embed_dim, bias=False)
+
+        self.num_heads = config.num_attention_heads
+        self.embed_dim = config.embed_dim
+
+    def forward(self, x, cos_sin):
+        """
+        `x` has shape (batch_size, seq_len, embed_dim)
+        """
+        batch_size, seq_len, embed_dim = x.shape
+        q, k, v = self.Wq(x), self.Wk(x), self.Wv(x) # each shas shape (batch_size, seq_len, embed_dim)
+
+        head_dim = embed_dim // self.num_heads
+        assert self.num_heads * head_dim == embed_dim, f"{self.num_heads=}, {head_dim=}, {embed_dim=}"
+
+        q = q.view(batch_size, seq_len, self.num_heads, head_dim) # (batch_size, seq_len, num_heads, head_dim)
+        k = k.view(batch_size, seq_len, self.num_heads, head_dim) # (batch_size, seq_len, num_heads, head_dim)
+        v = v.view(batch_size, seq_len, self.num_heads, head_dim) # (batch_size, seq_len, num_heads, head_dim)
+
+        # Apply Rotary Embeddings to queries and keys to get relative positional encoding
+        cos, sin = cos_sin
+        q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin) # QK rotary embedding
+        q, k = rmsnorm(q), rmsnorm(k) # QK norm
+        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2) # make head be batch dim, e.g. (batch_size, seq_len, num_heads, head_dim) -> (batch_size, num_heads, seq_len, head_dim)
+
+        # att = q @ k.transpose(-2, -1) * (1.0 / math.sqrt(k.shape[-1])) # (batch_size, num_heads, seq_len, seq_len)
+        # att = F.softmax(att, dim=-1)
+        # y = att @ v # (batch_size, num_heads, seq_len, seq_len) x (batch_size, num_heads, seq_len, head_dim) -> (batch_size, num_heads, seq_len, head_dim)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=False)
+        y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, embed_dim)
+        return self.Wo(y)
+
+class MLP(nn.Module):
+
+    def __init__(self, input_dim, hidden_dim=None, output_dim=None, bias=False):
+        super().__init__()
+        hidden_dim = hidden_dim if hidden_dim is not None else 4 * input_dim
+        output_dim = output_dim if output_dim is not None else input_dim
+
+        self.W1 = nn.Linear(input_dim, hidden_dim, bias=bias)
+        self.W2 = nn.Linear(hidden_dim, output_dim, bias=bias)
+
+    def forward(self, x):
+        """
+        `x` has shape (B, d) where B is batch size and d is embedding dimension
+        """
+        x = self.W1(x)
+        x = F.silu(x) # TODO pass in different activation function options from config
+        x = self.W2(x)
+        return x
+    
+
+class Block(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.attn = BidirectionalSelfAttention(config)
+        self.mlp = MLP(input_dim=config.embed_dim, hidden_dim=4*config.embed_dim, output_dim=config.embed_dim)
+
+    def forward(self, x, c, cos_sin):
+        """
+        `x` has shape (B, L, d) where B is batch size, L is sequence length, and d is embedding dimension
+            this is basically a tensor containing sequences of token embeddings 
+        `c` has shape (B, d) where B is batch size and d is embedding dimension, this is the time embedding
+            which can be viewed as "conditioning" on time (which is why I use the letter "c")
+        """
+        x = x + self.attn(x=rmsnorm(x), cos_sin=cos_sin)
+        x = x + self.mlp(rmsnorm(x))
+        return x
 
 class PhonemeTextEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.token_embbeddings = nn.Embedding(config['vocab_size'], config['embedding_dim'], config['pad_token_id'])
-        self.positional_embeddings = SinusoidalPositionalEmbedding(embedding_dim=config['embedding_dim'], base=config['sinusoidal_base'])
+        ###self.positional_embeddings = SinusoidalPositionalEmbedding(embedding_dim=config['embedding_dim'], base=config['sinusoidal_base'])
+
+        head_dim = config['embedding_dim'] // config['num_attention_heads']
+        assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
+
+        cos, sin = precompute_rotary_embeddings(seq_len=config.max_seq_len, head_dim=head_dim, base=config.rotary_base)
+        self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
+        self.register_buffer("sin", sin, persistent=False)
+
+        # self.layers = nn.ModuleList([
+        #     EncSALayer( # TODO this class is a mess
+        #         self.hidden_size, self.dropout,
+        #         kernel_size=ffn_kernel_size, act=ffn_act,
+        #         num_heads=num_heads, rotary_embed=rotary_embed
+        #     )
+        #     for _ in range(self.num_layers)
+        # ])
+
+        self.blocks = nn.ModuleList([Block(config) for _ in range(config.num_blocks)])
+
+        ###self.layer_norm = nn.LayerNorm(config['embedding_dim'])
 
     
     def forward(self, token_ids, cond, ph_padding_mask):
@@ -51,18 +274,33 @@ class PhonemeTextEncoder(nn.Module):
         """
         tok_embs = self.token_embeddings(token_ids) # (B, P, embedding_dim)
         B, P, embedding_dim = token_ids.shape
-        pos_embs = self.positional_embeddings(seq_len=P, device=tok_embs.dvice) # not using RoPE
+        ###pos_embs = self.positional_embeddings(seq_len=P, device=tok_embs.dvice) # not using RoPE
+        cos_sin = self.cos, self.sin
+
         x = tok_embs * math.sqrt(embedding_dim) # scale embeddings by sqrt(d)
-        x = x + cond + pos_embs
+        x = x + cond### + pos_embs
         x = F.dropout(x, p=self.dropout, training=self.training)
         # TODO attention and stuff? everything you did so far takes you roughly up to here https://github.com/openvpi/DiffSinger/blob/main/modules/fastspeech/tts_modules.py#L408
 
+        # x = x * torch.logical_not(ph_padding_mask)
+        # for layer in self.layers:
+        #     x = layer(x, encoder_padding_mask=ph_padding_mask, attn_mask=attn_mask) * torch.logical_not(ph_padding_mask) # TODO they don't even have an attn_mask arg, this is such a mess
+        # x = self.layer_norm(x) * torch.logical_not(ph_padding_mask)
+        # return x
+
+        x = rmsnorm(x)
+        for block in self.blocks:
+            x = block(x=x, c=c, cos_sin=cos_sin)
+        #####x = F.layer_norm(x, [x.shape[-1]]) * scale + shift
+        x = rmsnorm(x)
+        return x # (B, P, embedding_dim)
 
 class MusicScoreEncoder(nn.module):
 
     def __init__(self, config):
         super().__init__()
-        self.txt_embed = nn.Embedding(config['vocab_size'], config['embedding_dim'], config['pad_token_id'])
+        #self.txt_embed = nn.Embedding(config['vocab_size'], config['embedding_dim'], config['pad_token_id'])
+        self.phoneme_text_encoder = PhonemeTextEncoder(config)
         self.dur_embed = nn.Linear(1, config['embedding_dim'])
     
 
@@ -80,9 +318,12 @@ class MusicScoreEncoder(nn.module):
             boolean mask which is True when the audio was unvoiced, corresponds to where the preinterpolated f0 was zero. False otherwise.
         """
 
-        txt_embed = self.txt_embed(txt_tokens) # (B, P, embedding_dim) # going to remove this since we'll use PhonemeTextEncoder which has the embedding layer inside of it
+        ######txt_embed = self.txt_embed(txt_tokens) # (B, P, embedding_dim) # going to remove this since we'll use PhonemeTextEncoder which has the embedding layer inside of it
+        
         dur = mel2ph_to_dur(mel2ph, txt_tokens.shape[1]).float() # (B, P)
         dur_embed = self.dur_embed(dur[:, :, None]) # (B, P, embedding_dim) -- (B, P, 1) x (1, embedding_dim) ### each row is the same embedding weights scaled by the duration (the same bias is added to each row)
+
+        phoneme_text_embeddings = self.phoneme_text_encoder(token_ids=txt_tokens, cond=dur_embed, ph_padding_mask=ph_padding_mask)
 
         # TODO below here -----------------
         # next, they do some transformer-based encoding of the text with positional info and padding taken into account, this makes sense at a high level
