@@ -258,7 +258,7 @@ class PhonemeTextEncoder(nn.Module):
         #     for _ in range(self.num_layers)
         # ])
 
-        self.blocks = nn.ModuleList([Block(config) for _ in range(config.num_blocks)])
+        self.blocks = nn.ModuleList([Block(config) for _ in range(config['num_blocks'])])
 
         ###self.layer_norm = nn.LayerNorm(config['embedding_dim'])
 
@@ -329,7 +329,7 @@ class MusicScoreEncoder(nn.module):
         # Typically T >> P. For each mel frame we extract the phoneme embedding corresponding to index stored in mel2ph
         condition = torch.gather(input=phoneme_text_embeddings, dim=1, index=mel2ph_) # (B, T, embedding_dim) -- note: probably want padding token to be index 0 or something to make it a valid index to avoid an error here, can deal with ignoring padding embedding terms later
 
-        f0_mel = (1 + f0 / 700).log() # (B, T)
+        f0_mel = (1 + f0 / 700).log() # (B, T) # TODO, paper says f0 is standardied to mean 0 and unit variance, but idk where this happens
         pitch_embed = self.pitch_embed(f0_mel[:, :, None]) # (B, T, embedding_dim)
         condition += pitch_embed
 
@@ -350,4 +350,127 @@ class MusicScoreEncoder(nn.module):
 class AuxiliaryDeocder(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.num_layers = config['num_layers'] # they use 6 apparently, see e.g. Section 4.2 https://arxiv.org/abs/1905.09263
+        self.num_blocks = config['num_blocks'] # they use 6 apparently, see e.g. Section 4.2 https://arxiv.org/abs/1905.09263
+        self.blocks = nn.ModuleList([Block(config) for _ in range(config['num_blocks'])])
+        self.W = nn.Linear(config['embedding_dim'], config['mel_bins']) # e.g. project from 256 to 80
+
+        head_dim = config['embedding_dim'] // config['num_attention_heads']
+        assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
+
+        cos, sin = precompute_rotary_embeddings(seq_len=config.max_seq_len, head_dim=head_dim, base=config.rotary_base)
+        self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
+        self.register_buffer("sin", sin, persistent=False)
+    
+    def forward(self, x, mel_padding_mask):
+        """
+        `x` has shape (B, T, d) where B is batch size, T is mel frames, and d is embedding dimension. Intended to be the output of
+            the music score encoder, the decoder is meant to transform it into a batch of mel-spectrograms with shape (B, T, M)
+            where M is the number of mel bins (discretizes the frequency, usually use M=80)
+        `mel_padding_mask` has shape (B, T) and is True if the mel frame index (for a given batch index) corresponds to a padding value, False otherwise
+        """
+        cos_sin = self.cos, self.sin
+        attn_mask = torch.logical_not(mel_padding_mask)
+        x = rmsnorm(x) # (B, T, d)
+        for block in self.blocks:
+            x = block(x=x, cos_sin=cos_sin, attn_mask=attn_mask)
+        x = self.W(x)
+        return x # (B, T, M)
+
+
+###########################################
+# TODO
+# TODO, rewrite the wavenet and residual block below, uv is only used during validation? how do they predict k again? need pad collate function, need training loop, loss functions, need to train enc/dec and denoiser separately, handle freezing weights, etc. need vocoder if you're gonna validate sounds produced from test set gen'd spectrograms
+class ResidualBlock(nn.Module):
+    def __init__(self, encoder_hidden=256, residual_channels=256, dilation=1):
+        super().__init__()
+        self.residual_channels = residual_channels
+        self.dilated_conv = nn.Conv1d(
+            residual_channels,
+            2 * residual_channels,
+            kernel_size=3,
+            padding=dilation,
+            dilation=dilation
+        )
+        self.diffusion_projection = nn.Linear(residual_channels, residual_channels)
+        self.conditioner_projection = nn.Conv1d(encoder_hidden, 2 * residual_channels, 1)
+        self.output_projection = nn.Conv1d(residual_channels, 2 * residual_channels, 1)
+
+    def forward(self, x, conditioner, diffusion_step):
+        diffusion_step = self.diffusion_projection(diffusion_step).unsqueeze(-1)
+        conditioner = self.conditioner_projection(conditioner)
+        y = x + diffusion_step
+
+        y = self.dilated_conv(y) + conditioner
+
+        # Using torch.split instead of torch.chunk to avoid using onnx::Slice
+        gate, filter = torch.split(y, [self.residual_channels, self.residual_channels], dim=1)
+        y = torch.sigmoid(gate) * torch.tanh(filter)
+
+        y = self.output_projection(y)
+
+        # Using torch.split instead of torch.chunk to avoid using onnx::Slice
+        residual, skip = torch.split(y, [self.residual_channels, self.residual_channels], dim=1)
+        return (x + residual) / math.sqrt(2.0), skip
+
+class Conv1d(torch.nn.Conv1d):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        nn.init.kaiming_normal_(self.weight)
+
+class WaveNet(nn.Module):
+    def __init__(self, in_dims, n_feats, *, num_layers=20, num_channels=256, dilation_cycle_length=4):
+        super().__init__()
+        self.in_dims = in_dims
+        self.n_feats = n_feats
+        self.input_projection = Conv1d(in_dims * n_feats, num_channels, 1)
+        self.diffusion_embedding = SinusoidalPosEmb(num_channels)
+        self.mlp = nn.Sequential(
+            nn.Linear(num_channels, num_channels * 4),
+            nn.Mish(),
+            nn.Linear(num_channels * 4, num_channels)
+        )
+        self.residual_layers = nn.ModuleList([
+            ResidualBlock(
+                encoder_hidden=hparams['hidden_size'],
+                residual_channels=num_channels,
+                dilation=2 ** (i % dilation_cycle_length)
+            )
+            for i in range(num_layers)
+        ])
+        self.skip_projection = Conv1d(num_channels, num_channels, 1)
+        self.output_projection = Conv1d(num_channels, in_dims * n_feats, 1)
+        nn.init.zeros_(self.output_projection.weight)
+
+    def forward(self, spec, diffusion_step, cond):
+        """
+        :param spec: [B, F, M, T]
+        :param diffusion_step: [B, 1]
+        :param cond: [B, H, T]
+        :return:
+        """
+        if self.n_feats == 1:
+            x = spec.squeeze(1)  # [B, M, T]
+        else:
+            x = spec.flatten(start_dim=1, end_dim=2)  # [B, F x M, T]
+        x = self.input_projection(x)  # [B, C, T]
+
+        x = F.relu(x)
+        diffusion_step = self.diffusion_embedding(diffusion_step)
+        diffusion_step = self.mlp(diffusion_step)
+        skip = []
+        for layer in self.residual_layers:
+            x, skip_connection = layer(x, cond, diffusion_step)
+            skip.append(skip_connection)
+
+        x = torch.sum(torch.stack(skip), dim=0) / sqrt(len(self.residual_layers))
+        x = self.skip_projection(x)
+        x = F.relu(x)
+        x = self.output_projection(x)  # [B, M, T]
+        if self.n_feats == 1:
+            x = x[:, None, :, :]
+        else:
+            # This is the temporary solution since PyTorch 1.13
+            # does not support exporting aten::unflatten to ONNX
+            # x = x.unflatten(dim=1, sizes=(self.n_feats, self.in_dims))
+            x = x.reshape(-1, self.n_feats, self.in_dims, x.shape[2])
+        return x
