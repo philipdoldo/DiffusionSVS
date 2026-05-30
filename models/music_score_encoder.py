@@ -165,17 +165,18 @@ class BidirectionalSelfAttention(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.Wq = nn.Linear(config.embed_dim, config.embed_dim, bias=False)
-        self.Wk = nn.Linear(config.embed_dim, config.embed_dim, bias=False)
-        self.Wv = nn.Linear(config.embed_dim, config.embed_dim, bias=False)
-        self.Wo = nn.Linear(config.embed_dim, config.embed_dim, bias=False)
+        self.Wq = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
+        self.Wk = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
+        self.Wv = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
+        self.Wo = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
 
-        self.num_heads = config.num_attention_heads
-        self.embed_dim = config.embed_dim
+        self.num_heads = config['num_attention_heads']
+        self.embed_dim = config['embedding_dim']
 
-    def forward(self, x, cos_sin):
+    def forward(self, x, cos_sin, attn_mask):
         """
         `x` has shape (batch_size, seq_len, embed_dim)
+        `attn_mask` has shape (batch_size, seq_len) and is True for entries that should take part in attention and False otherwise
         """
         batch_size, seq_len, embed_dim = x.shape
         q, k, v = self.Wq(x), self.Wk(x), self.Wv(x) # each shas shape (batch_size, seq_len, embed_dim)
@@ -196,7 +197,7 @@ class BidirectionalSelfAttention(nn.Module):
         # att = q @ k.transpose(-2, -1) * (1.0 / math.sqrt(k.shape[-1])) # (batch_size, num_heads, seq_len, seq_len)
         # att = F.softmax(att, dim=-1)
         # y = att @ v # (batch_size, num_heads, seq_len, seq_len) x (batch_size, num_heads, seq_len, head_dim) -> (batch_size, num_heads, seq_len, head_dim)
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=False)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=False, attn_mask=attn_mask)
         y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, embed_dim)
         return self.Wo(y)
 
@@ -219,7 +220,6 @@ class MLP(nn.Module):
         x = self.W2(x)
         return x
     
-
 class Block(nn.Module):
 
     def __init__(self, config):
@@ -227,14 +227,12 @@ class Block(nn.Module):
         self.attn = BidirectionalSelfAttention(config)
         self.mlp = MLP(input_dim=config.embed_dim, hidden_dim=4*config.embed_dim, output_dim=config.embed_dim)
 
-    def forward(self, x, c, cos_sin):
+    def forward(self, x, cos_sin, attn_mask):
         """
-        `x` has shape (B, L, d) where B is batch size, L is sequence length, and d is embedding dimension
-            this is basically a tensor containing sequences of token embeddings 
-        `c` has shape (B, d) where B is batch size and d is embedding dimension, this is the time embedding
-            which can be viewed as "conditioning" on time (which is why I use the letter "c")
+        `x` has shape (B, P, embedding_dim) where B is batch size and P is the phoneme sequence length
+            this is basically a tensor containing sequences of phoneme/token embeddings 
         """
-        x = x + self.attn(x=rmsnorm(x), cos_sin=cos_sin)
+        x = x + self.attn(x=rmsnorm(x), cos_sin=cos_sin, attn_mask=attn_mask)
         x = x + self.mlp(rmsnorm(x))
         return x
 
@@ -287,10 +285,10 @@ class PhonemeTextEncoder(nn.Module):
         #     x = layer(x, encoder_padding_mask=ph_padding_mask, attn_mask=attn_mask) * torch.logical_not(ph_padding_mask) # TODO they don't even have an attn_mask arg, this is such a mess
         # x = self.layer_norm(x) * torch.logical_not(ph_padding_mask)
         # return x
-
+        attn_mask = torch.logical_not(ph_padding_mask)
         x = rmsnorm(x)
         for block in self.blocks:
-            x = block(x=x, c=c, cos_sin=cos_sin)
+            x = block(x=x, cos_sin=cos_sin, attn_mask=attn_mask)
         #####x = F.layer_norm(x, [x.shape[-1]]) * scale + shift
         x = rmsnorm(x)
         return x # (B, P, embedding_dim)
@@ -302,6 +300,7 @@ class MusicScoreEncoder(nn.module):
         #self.txt_embed = nn.Embedding(config['vocab_size'], config['embedding_dim'], config['pad_token_id'])
         self.phoneme_text_encoder = PhonemeTextEncoder(config)
         self.dur_embed = nn.Linear(1, config['embedding_dim'])
+        self.pitch_embed = nn.Linear(1, config['embedding_dim'])
     
 
     def forward(self, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask):
@@ -323,14 +322,32 @@ class MusicScoreEncoder(nn.module):
         dur = mel2ph_to_dur(mel2ph, txt_tokens.shape[1]).float() # (B, P)
         dur_embed = self.dur_embed(dur[:, :, None]) # (B, P, embedding_dim) -- (B, P, 1) x (1, embedding_dim) ### each row is the same embedding weights scaled by the duration (the same bias is added to each row)
 
-        phoneme_text_embeddings = self.phoneme_text_encoder(token_ids=txt_tokens, cond=dur_embed, ph_padding_mask=ph_padding_mask)
+        phoneme_text_embeddings = self.phoneme_text_encoder(token_ids=txt_tokens, cond=dur_embed, ph_padding_mask=ph_padding_mask) # (B. P, embedding_dim)
 
-        # TODO below here -----------------
-        # next, they do some transformer-based encoding of the text with positional info and padding taken into account, this makes sense at a high level
-        # seems like i should put self.txt_embed inside the encoder and just call it self.txt_encoder or something, seems simpler, feed in padding mask too
-        encoder_out = self.encoder(txt_embed, extra_embed, txt_tokens == 0) # takes dur_emb as input, maybe rename some stuff
-        # see https://github.com/openvpi/DiffSinger/blob/main/modules/fastspeech/tts_modules.py#L407 for phoneme text encoder
+        mel2ph_ = mel2ph[..., None].repeat([1, 1, phoneme_text_embeddings.shape[-1]]) # (B, T, embedding_dim)
 
-        #encoder_out = F.pad(encoder_out, [0, 0, 1, 0]) # I don't need this because i 0-index the mel2ph
-        mel2ph_ = mel2ph[..., None].repeat([1, 1, encoder_out.shape[-1]])
-        # continue around here https://github.com/openvpi/DiffSinger/blob/main/modules/fastspeech/acoustic_encoder.py#L100
+        # Typically T >> P. For each mel frame we extract the phoneme embedding corresponding to index stored in mel2ph
+        condition = torch.gather(input=phoneme_text_embeddings, dim=1, index=mel2ph_) # (B, T, embedding_dim) -- note: probably want padding token to be index 0 or something to make it a valid index to avoid an error here, can deal with ignoring padding embedding terms later
+
+        f0_mel = (1 + f0 / 700).log() # (B, T)
+        pitch_embed = self.pitch_embed(f0_mel[:, :, None]) # (B, T, embedding_dim)
+        condition += pitch_embed
+
+        return condition # (B, T, embedding_dim)
+
+        # # TODO below here -----------------
+        # # next, they do some transformer-based encoding of the text with positional info and padding taken into account, this makes sense at a high level
+        # # seems like i should put self.txt_embed inside the encoder and just call it self.txt_encoder or something, seems simpler, feed in padding mask too
+        # encoder_out = self.encoder(txt_embed, extra_embed, txt_tokens == 0) # takes dur_emb as input, maybe rename some stuff
+        # # see https://github.com/openvpi/DiffSinger/blob/main/modules/fastspeech/tts_modules.py#L407 for phoneme text encoder
+
+        # #encoder_out = F.pad(encoder_out, [0, 0, 1, 0]) # I don't need this because i 0-index the mel2ph
+        # mel2ph_ = mel2ph[..., None].repeat([1, 1, encoder_out.shape[-1]])
+        # # continue around here https://github.com/openvpi/DiffSinger/blob/main/modules/fastspeech/acoustic_encoder.py#L100
+
+
+
+class AuxiliaryDeocder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.num_layers = config['num_layers'] # they use 6 apparently, see e.g. Section 4.2 https://arxiv.org/abs/1905.09263
