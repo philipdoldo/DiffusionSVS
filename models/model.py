@@ -1,3 +1,18 @@
+"""
+Some files worth referencing if you want a more faithful replication. I chose to ignore some details for simplicity.
+    OpenVPI's music score encoder: https://github.com/openvpi/DiffSinger/blob/main/modules/fastspeech/acoustic_encoder.py#L14
+    OpenVPI's phoneme text encoder (used in music score encoder): https://github.com/openvpi/DiffSinger/blob/main/modules/fastspeech/tts_modules.py#L353
+    Some modules they use for feedforward transformer layer, I just ignored these to keep things simple for now (what I do might be better anyway, e.g. I use RoPE)
+        https://github.com/openvpi/DiffSinger/blob/main/modules/commons/common_layers.py#L29
+        https://github.com/openvpi/DiffSinger/blob/main/modules/commons/common_layers.py#L120
+        https://github.com/openvpi/DiffSinger/blob/main/modules/commons/common_layers.py#L216
+    OpenVPI's auxiliary decoder: https://github.com/openvpi/DiffSinger/blob/main/modules/aux_decoder/convnext.py -- I ignored this for now and did my own implementation and to keep things simple
+    OpenVPI's wavenet: https://github.com/openvpi/DiffSinger/blob/main/modules/backbones/wavenet.py
+    DiffSinger's wavenet: https://github.com/MoonInTheRiver/DiffSinger/blob/ce7789f1427ddcdec647b3ab2bf2d1b12134e51e/usr/diff/net.py#L81    
+
+    In the original code, they 1-index mel2ph but I choose to 0-index mel2ph which makes things simpler 
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -34,91 +49,6 @@ class SinusoidalPositionalEmbedding(nn.Module):
         positions = torch.arange(seq_len, device=device) # shape (seq_len)
         angles = positions[:, None] * freqs[None, :] # shape (seq_len, embedding_dim//2)
         return torch.cat([angles.sin(), angles.cos()], dim=-1) # shape (seq_len, embedding_dim)
-    
-# class XavierUniformInitLinear(torch.nn.Linear):
-#     # TODO
-#     # copied from https://github.com/openvpi/DiffSinger/blob/main/modules/commons/common_layers.py#L29
-#     def __init__(
-#             self,
-#             in_features: int,
-#             out_features: int,
-#             *args,
-#             bias: bool = True,
-#             **kwargs
-#     ):
-#         super().__init__(in_features, out_features, *args, bias=bias, **kwargs)
-#         nn.init.xavier_uniform_(self.weight)
-#         if bias:
-#             nn.init.constant_(self.bias, 0.)
-
-# class TransformerFFNLayer(nn.Module):
-#     # TODO I think the design choice here is a bit weird
-#     # mostly copied from https://github.com/openvpi/DiffSinger/blob/main/modules/commons/common_layers.py#L120
-#     def __init__(self, hidden_size, filter_size, kernel_size=1, dropout=0., act='gelu'):
-#         super().__init__()
-#         self.kernel_size = kernel_size
-#         self.dropout = dropout
-#         self.act = act
-#         filter_size_1 = filter_size
-#         if self.act == 'relu':
-#             self.act_fn = nn.ReLU()
-#         elif self.act == 'gelu':
-#             self.act_fn = nn.GELU()
-#         elif self.act == 'swish':
-#             self.act_fn = nn.SiLU()
-#         else:
-#             raise ValueError(f'{act} is not a valid activation')
-#         self.ffn_1 = nn.Conv1d(hidden_size, filter_size_1, kernel_size, padding=kernel_size // 2)
-#         self.ffn_2 = XavierUniformInitLinear(filter_size, hidden_size)
-
-#     def forward(self, x):
-#         # x: B x T x C
-#         x = self.ffn_1(x.transpose(1, 2)).transpose(1, 2)
-#         x = x * self.kernel_size ** -0.5
-
-#         x = self.act_fn(x)
-#         x = F.dropout(x, self.dropout, training=self.training)
-#         x = self.ffn_2(x)
-#         return x
-    
-# class EncSALayer(nn.Module):
-#     # TODO
-#     # copied from https://github.com/openvpi/DiffSinger/blob/main/modules/commons/common_layers.py#L216
-#     def __init__(self, c, num_heads, dropout, attention_dropout=0.1,
-#                  relu_dropout=0.1, kernel_size=9, act='gelu'):
-#         super().__init__()
-#         self.dropout = dropout
-#         self.layer_norm1 = nn.LayerNorm(c)
-#         self.self_attn = nn.MultiheadAttention(c, num_heads, dropout=attention_dropout, bias=False, batch_first=False)
-#         self.layer_norm2 = nn.LayerNorm(c)
-#         self.ffn = TransformerFFNLayer(c, 4 * c, kernel_size=kernel_size, dropout=relu_dropout, act=act)
-
-#     def forward(self, x, encoder_padding_mask=None, **kwargs):
-#         layer_norm_training = kwargs.get('layer_norm_training', None)
-#         if layer_norm_training is not None:
-#             self.layer_norm1.training = layer_norm_training
-#             self.layer_norm2.training = layer_norm_training
-#         residual = x
-#         x = self.layer_norm1(x)
-
-#         x = x.transpose(0, 1)
-#         x, _, = self.self_attn(query=x, key=x, value=x, key_padding_mask=encoder_padding_mask)
-#         x = x.transpose(0, 1)
-        
-#         x = F.dropout(x, self.dropout, training=self.training)
-#         x = residual + x
-#         x = x * (1 - encoder_padding_mask.float())[..., None]
-
-#         residual = x
-#         x = self.layer_norm2(x)
-#         x = self.ffn(x)
-#         x = F.dropout(x, self.dropout, training=self.training)
-#         x = residual + x
-#         x = x * (1 - encoder_padding_mask.float())[..., None]
-#         return x
-
-
-
 
 def rmsnorm(x):
     """
@@ -240,7 +170,6 @@ class PhonemeTextEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.token_embbeddings = nn.Embedding(config['vocab_size'], config['embedding_dim'], config['pad_token_id'])
-        ###self.positional_embeddings = SinusoidalPositionalEmbedding(embedding_dim=config['embedding_dim'], base=config['sinusoidal_base'])
 
         head_dim = config['embedding_dim'] // config['num_attention_heads']
         assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
@@ -249,19 +178,7 @@ class PhonemeTextEncoder(nn.Module):
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
 
-        # self.layers = nn.ModuleList([
-        #     EncSALayer( # TODO this class is a mess
-        #         self.hidden_size, self.dropout,
-        #         kernel_size=ffn_kernel_size, act=ffn_act,
-        #         num_heads=num_heads, rotary_embed=rotary_embed
-        #     )
-        #     for _ in range(self.num_layers)
-        # ])
-
         self.blocks = nn.ModuleList([Block(config) for _ in range(config['num_blocks'])])
-
-        ###self.layer_norm = nn.LayerNorm(config['embedding_dim'])
-
     
     def forward(self, token_ids, cond, ph_padding_mask):
         """
@@ -272,24 +189,16 @@ class PhonemeTextEncoder(nn.Module):
         """
         tok_embs = self.token_embeddings(token_ids) # (B, P, embedding_dim)
         B, P, embedding_dim = token_ids.shape
-        ###pos_embs = self.positional_embeddings(seq_len=P, device=tok_embs.dvice) # not using RoPE
         cos_sin = self.cos, self.sin
 
         x = tok_embs * math.sqrt(embedding_dim) # scale embeddings by sqrt(d)
-        x = x + cond### + pos_embs
+        x = x + cond # I'm using RoPE, but if not using RoPE you'd also add sinusoidal positional embeddings here if following the original implementation
         x = F.dropout(x, p=self.dropout, training=self.training)
-        # TODO attention and stuff? everything you did so far takes you roughly up to here https://github.com/openvpi/DiffSinger/blob/main/modules/fastspeech/tts_modules.py#L408
 
-        # x = x * torch.logical_not(ph_padding_mask)
-        # for layer in self.layers:
-        #     x = layer(x, encoder_padding_mask=ph_padding_mask, attn_mask=attn_mask) * torch.logical_not(ph_padding_mask) # TODO they don't even have an attn_mask arg, this is such a mess
-        # x = self.layer_norm(x) * torch.logical_not(ph_padding_mask)
-        # return x
-        attn_mask = torch.logical_not(ph_padding_mask)
+        attn_mask = torch.logical_not(ph_padding_mask) # (B, P)
         x = rmsnorm(x)
         for block in self.blocks:
             x = block(x=x, cos_sin=cos_sin, attn_mask=attn_mask)
-        #####x = F.layer_norm(x, [x.shape[-1]]) * scale + shift
         x = rmsnorm(x)
         return x # (B, P, embedding_dim)
 
@@ -297,7 +206,6 @@ class MusicScoreEncoder(nn.module):
 
     def __init__(self, config):
         super().__init__()
-        #self.txt_embed = nn.Embedding(config['vocab_size'], config['embedding_dim'], config['pad_token_id'])
         self.phoneme_text_encoder = PhonemeTextEncoder(config)
         self.dur_embed = nn.Linear(1, config['embedding_dim'])
         self.pitch_embed = nn.Linear(1, config['embedding_dim'])
@@ -315,17 +223,14 @@ class MusicScoreEncoder(nn.module):
             contains the fundamental frequency during each mel frame (interpolation was used to smooth across unvoiced segments, see data preprocessing/binarization code)
         `uv` has shape (B, T)
             boolean mask which is True when the audio was unvoiced, corresponds to where the preinterpolated f0 was zero. False otherwise.
+            TODO `uv` appears to be unused in training? possibly used in validation?
         """
-
-        ######txt_embed = self.txt_embed(txt_tokens) # (B, P, embedding_dim) # going to remove this since we'll use PhonemeTextEncoder which has the embedding layer inside of it
-        
         dur = mel2ph_to_dur(mel2ph, txt_tokens.shape[1]).float() # (B, P)
         dur_embed = self.dur_embed(dur[:, :, None]) # (B, P, embedding_dim) -- (B, P, 1) x (1, embedding_dim) ### each row is the same embedding weights scaled by the duration (the same bias is added to each row)
 
         phoneme_text_embeddings = self.phoneme_text_encoder(token_ids=txt_tokens, cond=dur_embed, ph_padding_mask=ph_padding_mask) # (B. P, embedding_dim)
 
         mel2ph_ = mel2ph[..., None].repeat([1, 1, phoneme_text_embeddings.shape[-1]]) # (B, T, embedding_dim)
-
         # Typically T >> P. For each mel frame we extract the phoneme embedding corresponding to index stored in mel2ph
         condition = torch.gather(input=phoneme_text_embeddings, dim=1, index=mel2ph_) # (B, T, embedding_dim) -- note: probably want padding token to be index 0 or something to make it a valid index to avoid an error here, can deal with ignoring padding embedding terms later
 
@@ -335,19 +240,7 @@ class MusicScoreEncoder(nn.module):
 
         return condition # (B, T, embedding_dim)
 
-        # # TODO below here -----------------
-        # # next, they do some transformer-based encoding of the text with positional info and padding taken into account, this makes sense at a high level
-        # # seems like i should put self.txt_embed inside the encoder and just call it self.txt_encoder or something, seems simpler, feed in padding mask too
-        # encoder_out = self.encoder(txt_embed, extra_embed, txt_tokens == 0) # takes dur_emb as input, maybe rename some stuff
-        # # see https://github.com/openvpi/DiffSinger/blob/main/modules/fastspeech/tts_modules.py#L407 for phoneme text encoder
-
-        # #encoder_out = F.pad(encoder_out, [0, 0, 1, 0]) # I don't need this because i 0-index the mel2ph
-        # mel2ph_ = mel2ph[..., None].repeat([1, 1, encoder_out.shape[-1]])
-        # # continue around here https://github.com/openvpi/DiffSinger/blob/main/modules/fastspeech/acoustic_encoder.py#L100
-
-
-
-class AuxiliaryDeocder(nn.Module):
+class AuxiliaryDecoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.num_blocks = config['num_blocks'] # they use 6 apparently, see e.g. Section 4.2 https://arxiv.org/abs/1905.09263
@@ -381,36 +274,33 @@ class AuxiliaryDeocder(nn.Module):
 # TODO
 # TODO, rewrite the wavenet and residual block below, uv is only used during validation? how do they predict k again? need pad collate function, need training loop, loss functions, need to train enc/dec and denoiser separately, handle freezing weights, etc. need vocoder if you're gonna validate sounds produced from test set gen'd spectrograms
 class ResidualBlock(nn.Module):
-    def __init__(self, encoder_hidden=256, residual_channels=256, dilation=1):
+    def __init__(self, embedding_dim=256, dilation=1):
         super().__init__()
-        self.residual_channels = residual_channels
-        self.dilated_conv = nn.Conv1d(
-            residual_channels,
-            2 * residual_channels,
-            kernel_size=3,
-            padding=dilation,
-            dilation=dilation
-        )
-        self.diffusion_projection = nn.Linear(residual_channels, residual_channels)
-        self.conditioner_projection = nn.Conv1d(encoder_hidden, 2 * residual_channels, 1)
-        self.output_projection = nn.Conv1d(residual_channels, 2 * residual_channels, 1)
+        self.embedding_dim = embedding_dim
+        self.dilated_conv = nn.Conv1d(in_channels=embedding_dim, out_channels=2*embedding_dim, kernel_size=3, padding=dilation, dilation=dilation)
+        self.time_emb_projection = nn.Linear(embedding_dim, embedding_dim)
+        self.cond_projection = nn.Conv1d(in_channels=embedding_dim, out_channels=2*embedding_dim, kernel_size=1)
+        self.output_projection = nn.Conv1d(in_channels=embedding_dim, out_channels=2*embedding_dim, kernel_size=1)
 
-    def forward(self, x, conditioner, diffusion_step):
-        diffusion_step = self.diffusion_projection(diffusion_step).unsqueeze(-1)
-        conditioner = self.conditioner_projection(conditioner)
-        y = x + diffusion_step
+    def forward(self, x, cond, time_emb):
+        """
+        `x` has shape (B, d, T) ###(B, T, M) maybe???
+        `cond` has shape (B, d, T) and is the output from the music score encoder
+        `time_emb` has shape (B, d) and is a batch of diffusion time steps
+        """
+        time_emb = self.time_emb_projection(time_emb).unsqueeze(-1) # (B, d, 1)
+        cond = self.cond_projection(cond) # (B, 2*d, T)
+        y = x + time_emb # (B, d, T)
 
-        y = self.dilated_conv(y) + conditioner
+        y = self.dilated_conv(y) + cond # (B, 2*d, T)
 
-        # Using torch.split instead of torch.chunk to avoid using onnx::Slice
-        gate, filter = torch.split(y, [self.residual_channels, self.residual_channels], dim=1)
-        y = torch.sigmoid(gate) * torch.tanh(filter)
+        gate, filter = torch.split(y, [self.embedding_dim, self.embedding_dim], dim=1) # ((B, d, T), (B, d, T))
+        y = torch.sigmoid(gate) * torch.tanh(filter) # (B, d, T)
 
-        y = self.output_projection(y)
+        y = self.output_projection(y) # (B, 2*d, T)
 
-        # Using torch.split instead of torch.chunk to avoid using onnx::Slice
-        residual, skip = torch.split(y, [self.residual_channels, self.residual_channels], dim=1)
-        return (x + residual) / math.sqrt(2.0), skip
+        residual, skip = torch.split(y, [self.embedding_dim, self.embedding_dim], dim=1) # ((B, d, T), (B, d, T))
+        return (x + residual) / math.sqrt(2.0), skip # ((B, d, T), (B, d, T))
 
 class Conv1d(torch.nn.Conv1d):
     def __init__(self, *args, **kwargs):
@@ -418,59 +308,56 @@ class Conv1d(torch.nn.Conv1d):
         nn.init.kaiming_normal_(self.weight)
 
 class WaveNet(nn.Module):
-    def __init__(self, in_dims, n_feats, *, num_layers=20, num_channels=256, dilation_cycle_length=4):
+    def __init__(self, config):
         super().__init__()
-        self.in_dims = in_dims
-        self.n_feats = n_feats
-        self.input_projection = Conv1d(in_dims * n_feats, num_channels, 1)
-        self.diffusion_embedding = SinusoidalPosEmb(num_channels)
+        self.num_mel_bins = config['num_mel_bins']
+        self.input_projection = Conv1d(in_channels=config['num_mel_bins'], out_channels=config['embedding_dim'], kernel_size=1)
+        self.time_embedding = SinusoidalPositionalEmbedding(embedding_dim=config['embedding_dim'], base=config['sinusoidal_base'])
         self.mlp = nn.Sequential(
-            nn.Linear(num_channels, num_channels * 4),
+            nn.Linear(config['embedding_dim'], config['embedding_dim']*4),
             nn.Mish(),
-            nn.Linear(num_channels * 4, num_channels)
+            nn.Linear(config['embedding_dim']*4, config['embedding_dim'])
         )
         self.residual_layers = nn.ModuleList([
             ResidualBlock(
-                encoder_hidden=hparams['hidden_size'],
-                residual_channels=num_channels,
-                dilation=2 ** (i % dilation_cycle_length)
+                embedding_dim=config['embedding_dim'],
+                residual_channels=config['embedding_dim'],
+                dilation=2**(i % config['dilation_cycle_length'])
             )
-            for i in range(num_layers)
+            for i in range(config['num_wavenet_layers'])
         ])
-        self.skip_projection = Conv1d(num_channels, num_channels, 1)
-        self.output_projection = Conv1d(num_channels, in_dims * n_feats, 1)
+        self.skip_projection = Conv1d(in_channels=config['embedding_dim'], out_channels=config['embedding_dim'], kernel_size=1)
+        self.output_projection = Conv1d(in_channels=config['embedding_dim'], out_channels=config['num_mel_bins'], kernel_size=1)
         nn.init.zeros_(self.output_projection.weight)
 
-    def forward(self, spec, diffusion_step, cond):
+    def forward(self, mel, t, cond):
         """
-        :param spec: [B, F, M, T]
-        :param diffusion_step: [B, 1]
-        :param cond: [B, H, T]
-        :return:
+        `mel` has shape (B, M, T) -- the mel spectrogram
+            B is batch size
+            M is number of mel bins
+            T is number of mel frames ### TODO note: in collate function or binarization code you'll need to transpose from (T, M) to (M, T) and maybe unsqueeze a 1
+        `t` has shape (B, 1) which is a batch of diffusion time steps
+        `cond` has shape (B, T, d)
+            d is embedding dimension
         """
-        if self.n_feats == 1:
-            x = spec.squeeze(1)  # [B, M, T]
-        else:
-            x = spec.flatten(start_dim=1, end_dim=2)  # [B, F x M, T]
-        x = self.input_projection(x)  # [B, C, T]
+        B, M, T = mel.shape 
+        if M != self.num_mel_bins:
+            raise ValueError(f"{mel.shape=}, {self.num_mel_bins=}")
+        if cond.shape[-1] != T:
+            raise ValueError(f"{cond.shape=}, {T=}")
+        cond.transpose(-2, -1) # (B, d, T)
+        x = self.input_projection(mel)  # (B, d, T)
 
-        x = F.relu(x)
-        diffusion_step = self.diffusion_embedding(diffusion_step)
-        diffusion_step = self.mlp(diffusion_step)
-        skip = []
+        x = F.relu(x) # (B, d, T)
+        time_emb = self.time_embedding(t) # (B, d)
+        time_emb = self.mlp(time_emb) # (B, d)
+        skip_connections = []
         for layer in self.residual_layers:
-            x, skip_connection = layer(x, cond, diffusion_step)
-            skip.append(skip_connection)
+            x, skip_connection = layer(x=x, cond=cond, time_emb=time_emb) # ((B, d, T), (B, d, T))
+            skip_connections.append(skip_connection)
 
-        x = torch.sum(torch.stack(skip), dim=0) / sqrt(len(self.residual_layers))
-        x = self.skip_projection(x)
-        x = F.relu(x)
-        x = self.output_projection(x)  # [B, M, T]
-        if self.n_feats == 1:
-            x = x[:, None, :, :]
-        else:
-            # This is the temporary solution since PyTorch 1.13
-            # does not support exporting aten::unflatten to ONNX
-            # x = x.unflatten(dim=1, sizes=(self.n_feats, self.in_dims))
-            x = x.reshape(-1, self.n_feats, self.in_dims, x.shape[2])
+        x = torch.sum(torch.stack(skip_connections), dim=0) / math.sqrt(len(self.residual_layers)) # (B, d, T) -- stack results in (num_layers, B, d, T) and sum over dim 0 results in (B, d, T)
+        x = self.skip_projection(x) # (B, d, T)
+        x = F.relu(x) # (B, d, T)
+        x = self.output_projection(x) # (B, M, T)
         return x
