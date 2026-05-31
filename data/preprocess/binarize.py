@@ -78,8 +78,8 @@ def process_utterance(
         center=audio_config["mel_center"],
     )
     log_mel = np.log(np.clip(mel, a_min=audio_config["mel_log_clip"], a_max=None)) # (n_mels, T)
-    log_mel = log_mel.T.astype(np.float32)  # (T, n_mels)
-    T = log_mel.shape[0]
+    log_mel = log_mel.astype(np.float32)  # (n_mels, T)
+    T = log_mel.shape[1]
 
     # ------------------------------------------------------------------
     # 3. f0
@@ -143,7 +143,7 @@ def process_utterance(
         raise BinarizationError # skip if the data isn't formatted properly, e.g. `popcs/popcs-爱你十分泪七分/0015.TextGrid` has final xmax of 11.819999999999993 but `/popcs/popcs-爱你十分泪七分/0015_wf0.wav` is only 11.42328798185941 seconds
 
     return {
-        "mel":        log_mel,    # float32 (T, n_mels)
+        "mel":        log_mel,    # float32 (n_mels, T)
         "f0":         f0,         # float32 (T,)
         "uv":         uv,         # bool    (T,)
         "mel2ph":     mel2ph,     # int32   (T,)

@@ -234,6 +234,7 @@ class MusicScoreEncoder(nn.module):
         # Typically T >> P. For each mel frame we extract the phoneme embedding corresponding to index stored in mel2ph
         condition = torch.gather(input=phoneme_text_embeddings, dim=1, index=mel2ph_) # (B, T, embedding_dim) -- note: probably want padding token to be index 0 or something to make it a valid index to avoid an error here, can deal with ignoring padding embedding terms later
 
+        # TODO, do I even want this log stuff here? maybe do this in binarize.py instead? print in DiffSinger what magnitude the values are before and after this step
         f0_mel = (1 + f0 / 700).log() # (B, T) # TODO, paper says f0 is standardied to mean 0 and unit variance, but idk where this happens
         pitch_embed = self.pitch_embed(f0_mel[:, :, None]) # (B, T, embedding_dim)
         condition += pitch_embed
@@ -272,7 +273,7 @@ class AuxiliaryDecoder(nn.Module):
 
 ###########################################
 # TODO
-# TODO, rewrite the wavenet and residual block below, uv is only used during validation? how do they predict k again? need pad collate function, need training loop, loss functions, need to train enc/dec and denoiser separately, handle freezing weights, etc. need vocoder if you're gonna validate sounds produced from test set gen'd spectrograms
+# TODO, log transform of mel spec?? (print from diffsinger script!!) uv is only used during validation? how do they predict k again? need pad collate function, need training loop, loss functions, need to train enc/dec and denoiser separately, handle freezing weights, etc. need vocoder if you're gonna validate sounds produced from test set gen'd spectrograms
 class ResidualBlock(nn.Module):
     def __init__(self, embedding_dim=256, dilation=1):
         super().__init__()
@@ -284,7 +285,7 @@ class ResidualBlock(nn.Module):
 
     def forward(self, x, cond, time_emb):
         """
-        `x` has shape (B, d, T) ###(B, T, M) maybe???
+        `x` has shape (B, d, T)
         `cond` has shape (B, d, T) and is the output from the music score encoder
         `time_emb` has shape (B, d) and is a batch of diffusion time steps
         """
@@ -292,7 +293,7 @@ class ResidualBlock(nn.Module):
         cond = self.cond_projection(cond) # (B, 2*d, T)
         y = x + time_emb # (B, d, T)
 
-        y = self.dilated_conv(y) + cond # (B, 2*d, T)
+        y = self.dilated_conv(y) + cond # (B, 2*d, T) -- since the kernel size is 3 in the convolution, some padding positions leak over a bit, but probably not a big deal -- all other convolutions have kernel size of 1 so padding positions don't interfere
 
         gate, filter = torch.split(y, [self.embedding_dim, self.embedding_dim], dim=1) # ((B, d, T), (B, d, T))
         y = torch.sigmoid(gate) * torch.tanh(filter) # (B, d, T)
@@ -334,10 +335,10 @@ class WaveNet(nn.Module):
         """
         `mel` has shape (B, M, T) -- the mel spectrogram
             B is batch size
-            M is number of mel bins
-            T is number of mel frames ### TODO note: in collate function or binarization code you'll need to transpose from (T, M) to (M, T) and maybe unsqueeze a 1
+            M is number of mel bins (usually 80)
+            T is number of mel frames
         `t` has shape (B, 1) which is a batch of diffusion time steps
-        `cond` has shape (B, T, d)
+        `cond` has shape (B, T, d) -- this is the output of the music score encoder
             d is embedding dimension
         """
         B, M, T = mel.shape 
