@@ -10,6 +10,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from models.model import MusicScoreEncoder, AuxiliaryDecoder, WaveNet, EncoderDecoder, WaveNetDenoiser
 from DiffSinger.training.exponential_moving_average import ExponentialMovingAverage
+from DiffSinger.data.dataloader import NaiveDataLoader
 
 def print0(s="", **kwargs):
     rank = int(os.environ.get('RANK', 0))
@@ -159,7 +160,7 @@ if __name__ == "__main__":
     num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     write0(f"Model Parameters: {num_params:,}\nTrainable Model Parameters: {num_trainable_params:,}\n", log_file=log_file)
 
-    train_loader = ShardDataLoader(shard_dir=config["train_shard_dir"], batch_size=batch_size, seq_len=config["seq_len"], rng_seed=config["rng_seed"])
+    train_loader = NaiveDataLoader(data_path=config["train_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["rng_seed"])
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -183,7 +184,7 @@ if __name__ == "__main__":
         initial_step = 0 # if not resuming training, have training loop start at step 0
 
     torch.manual_seed(config["rng_seed"] + rank) # (I guess this affects the categorical sampling, random times are in the dataloader)
-    ctmc = UniformCTMC(config)
+    ctmc = UniformCTMC(config) # TODO fix this and figure out training losses and such
 
     for step in range(initial_step, training_steps):
 
@@ -210,7 +211,7 @@ if __name__ == "__main__":
                 
                 t0 = time.time()
                 rng_state = torch.get_rng_state() # val might change rng state on rank 0, so save and restore it just in case, probably not very important
-                val_loader = ShardDataLoader(shard_dir=config["val_shard_dir"], batch_size=batch_size, seq_len=config["seq_len"]) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
+                val_loader = NaiveDataLoader(data_path=config["val_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"]) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
                 val_loader.reset() # should be unnecessary
 
                 ema.store(model.parameters()) # store copy of the actual model weights

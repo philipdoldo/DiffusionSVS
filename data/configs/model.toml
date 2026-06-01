@@ -1,3 +1,6 @@
+train_data_path = "/home/phil/DiffSinger/binarized_data/train.h5"
+rng_seed = 21
+
 [audio]
 sample_rate = 24000
 hop_size = 128
@@ -19,13 +22,12 @@ save_dir = "/home/phil/DiffSinger/binarized_data"
 test_songs  = ["popcs-说散就散", "popcs-隐形的翅膀"]
 val_songs = ["popcs-夏天的风", "popcs-稻香"]  # your choice, just not the test songs (DiffSinger effectively made test and val sets equal to each other, I won't do that)
 
-[model]
-model_type = EncoderDecoder
 
+[model]
+model_type = "EncoderDecoder"
 
 pad_token_id = 0 # maybe add a sanity check in training code that it matches with the vocab.json from the dataset that you end up loading
 vocab_size = 60
-
 
 dilation_cycle_length = 4 # for wavenet
 num_wavenet_layers = 20
