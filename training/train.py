@@ -9,7 +9,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from models.model import MusicScoreEncoder, AuxiliaryDecoder, WaveNet, EncoderDecoder, WaveNetDenoiser
-from exponential_moving_average import ExponentialMovingAverage
+from DiffSinger.training.exponential_moving_average import ExponentialMovingAverage
 
 def print0(s="", **kwargs):
     rank = int(os.environ.get('RANK', 0))
