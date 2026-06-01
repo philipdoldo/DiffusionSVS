@@ -189,24 +189,26 @@ if __name__ == "__main__":
     for step in range(initial_step, training_steps):
 
         # SAVE CHECKPOINTS
-        if rank == 0 and (step % checkpoint_interval == 0 or step == training_steps - 1):
-            torch.cuda.synchronize()
-            t0 = time.time()
-            checkpoint = {
-                'step' : step,
-                'model' : model.module.state_dict() if ddp else model.state_dict(),
-                'optimizer' : optimizer.state_dict(),
-                'dataloader' : train_loader.get_state_dict(),
-                'ema' : {'ema_params' : ema.ema_params, 'decay' : ema.decay},
-                'rng_seeds' : prior_rng_seeds,
-            }
-            checkpoint_path = os.path.join(log_dir, f'checkpoints/checkpoint_step{step}.pt')
-            torch.save(checkpoint, checkpoint_path)
-            torch.cuda.synchronize()
-            t1 = time.time()
-            write0(f" --- Checkpoint saved to {checkpoint_path} in {t1-t0:.4f}s\n", log_file=log_file)
+        if (step % checkpoint_interval == 0 or step == training_steps - 1):
+            dataloader_state_dict = train_loader.get_state_dict() # need to call this on all ranks, then save all-gathered result on rank 0
+            if rank == 0:
+                torch.cuda.synchronize()
+                t0 = time.time()
+                checkpoint = {
+                    'step' : step,
+                    'model' : model.module.state_dict() if ddp else model.state_dict(),
+                    'optimizer' : optimizer.state_dict(),
+                    'dataloader' : dataloader_state_dict,
+                    'ema' : {'ema_params' : ema.ema_params, 'decay' : ema.decay},
+                    'rng_seeds' : prior_rng_seeds,
+                }
+                checkpoint_path = os.path.join(log_dir, f'checkpoints/checkpoint_step{step}.pt')
+                torch.save(checkpoint, checkpoint_path)
+                torch.cuda.synchronize()
+                t1 = time.time()
+                write0(f" --- Checkpoint saved to {checkpoint_path} in {t1-t0:.4f}s\n", log_file=log_file)
 
-        if rank == 0 and (step % val_loss_interval == 0 or step == training_steps - 1):
+        if rank == 0 and (step % val_loss_interval == 0 or step == training_steps - 1): # TODO
             with torch.no_grad():
                 
                 t0 = time.time()
