@@ -271,6 +271,18 @@ class AuxiliaryDecoder(nn.Module):
         return x # (B, T, M)
 
 
+class EncoderDecoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.encoder = MusicScoreEncoder(config)
+        self.decoder = AuxiliaryDecoder(config)
+    
+    def forward(self, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask):
+
+        encoder_outputs = self.encoder(txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask) # (B, T, d)
+        decoder_outputs = self.decoder(encoder_outputs, mel_padding_mask) # (B, T, M)
+        return decoder_outputs
+
 ###########################################
 # TODO
 # TODO, log transform of mel spec?? (print from diffsinger script!!) uv is only used during validation? how do they predict k again? need pad collate function, need training loop, loss functions, need to train enc/dec and denoiser separately, handle freezing weights, etc. need vocoder if you're gonna validate sounds produced from test set gen'd spectrograms
@@ -362,3 +374,15 @@ class WaveNet(nn.Module):
         x = F.relu(x) # (B, d, T)
         x = self.output_projection(x) # (B, M, T)
         return x
+
+class WaveNetDenoiser(nn.Module):
+    
+    def __init__(self, config):
+        super().__init__()
+        self.encoder = MusicScoreEncoder(config)
+        self.denoiser = WaveNet(config)
+    
+    def forward(self, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, mel, t):
+        encoder_outputs = self.encoder(txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask)
+        denoiser_outputs = self.denoiser(mel=mel, t=t, cond=encoder_outputs)
+        return denoiser_outputs

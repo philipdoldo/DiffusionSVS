@@ -98,11 +98,11 @@ def process_utterance(
         raise ValueError(f"All frames of f0 are unvoiced, {wav_path=}, {tg_path=}")
 
     f0_raw = np.where(np.logical_not(uv), np.clip(f0_raw, f0_config["f0_min"], f0_config["f0_max"]), f0_raw) # this might not be needed since it might already be clipped, but doing it just in case
-    f0_log = np.where(np.logical_not(uv), np.log(f0_raw + 1e-8), 0.0)
+    f0_mel = np.where(np.logical_not(uv), 1127 * np.log(1 + f0_raw / 700), 0.0)
 
     # linearly interpolate log f0 across unvoiced gaps
     voiced_indices = np.where(np.logical_not(uv))[0]
-    f0 = np.interp(x=np.arange(T), xp=voiced_indices, fp=f0_log[voiced_indices]).astype(np.float32)
+    f0 = np.interp(x=np.arange(T), xp=voiced_indices, fp=f0_mel[voiced_indices]).astype(np.float32)
 
     # ------------------------------------------------------------------
     # 4. mel2ph and txt_tokens from TextGrid

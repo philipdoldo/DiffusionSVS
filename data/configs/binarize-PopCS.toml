@@ -12,7 +12,7 @@ mel_log_clip = 1e-5
 
 [f0]
 extractor = "parselmouth"   # "parselmouth" | "harvest"
-f0_min    = 65.0
+f0_min    = 50.0
 f0_max    = 1100.0
 
 [data]
