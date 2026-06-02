@@ -345,7 +345,7 @@ class WaveNet(nn.Module):
 
     def forward(self, mel, t, cond):
         """
-        `mel` has shape (B, M, T) -- the mel spectrogram
+        `mel` has shape (B, M, T) -- the (noisy) mel spectrogram
             B is batch size
             M is number of mel bins (usually 80)
             T is number of mel frames

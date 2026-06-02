@@ -12,6 +12,14 @@ from models.model import MusicScoreEncoder, AuxiliaryDecoder, WaveNet, EncoderDe
 from DiffSinger.training.exponential_moving_average import ExponentialMovingAverage
 from DiffSinger.data.dataloader import NaiveDataLoader
 
+"""
+TODO:
+    - get stats to normalize mel-spectrograms (don't need to unnormalize outputs I think, vocoder should accept normalized inputs) -- modify binarize.py
+    - get loss functions defined for both phases of training and handle using them correctly (feeding correct inputs to models, both for train and val, etc.)
+        - need to load models properly depending on which phase of training is being done, just hardcode for now
+    - get vocoder set up to test inference
+"""
+
 def print0(s="", **kwargs):
     rank = int(os.environ.get('RANK', 0))
     if rank == 0:
@@ -173,9 +181,14 @@ if __name__ == "__main__":
     ema = ExponentialMovingAverage(params=model.parameters(), decay=config["ema_decay"])
 
     if config.get("resume_training", False):
-        train_loader.load_state_dict(checkpoint["dataloader"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         ema.load_state_dict(checkpoint["ema"], device=device)
+
+        if rank == 0:
+            dataloader_state = checkpoint["dataloader"]
+        else:
+            dataloader_state = [None] * world_size # placeholder; rank 0 will broadcast
+        train_loader.load_state_dict(dataloader_state) # Must be called on ALL ranks (does broadcast internally)
 
         initial_step = checkpoint["step"]
 
