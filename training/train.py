@@ -15,10 +15,65 @@ from DiffSinger.data.dataloader import NaiveDataLoader
 """
 TODO:
     - get stats to normalize mel-spectrograms (don't need to unnormalize outputs I think, vocoder should accept normalized inputs) -- modify binarize.py
+        - save config when generating dataset and put in a nicer directory maybe
+        - get stats (min, max, mean, median, std) for f0 as well since in Section 4.1 they claim to standardize f0
     - get loss functions defined for both phases of training and handle using them correctly (feeding correct inputs to models, both for train and val, etc.)
         - need to load models properly depending on which phase of training is being done, just hardcode for now
     - get vocoder set up to test inference
 """
+
+class DiffusionProcess:
+    def __init__(self, beta_min: float=1e-4, beta_max: float=0.06, T: int=100):
+        """see Implementation Details in Section 4.1 https://arxiv.org/abs/2105.02446 which motivates the default values"""
+        self.beta_min = beta_min # beta_1 -- t=1 should be (approximately) pure data
+        self.beta_max = beta_max # beta_T -- t=T shouldbe pure noise (not sure why they use 0.06)
+        self.T = T # the maximum diffusion time step
+        self.precompute_alpha_bars() # precompute all of the alpha_bar values, see docstrings in `alpha_bar` and `precompute_alpha_bars` methods
+
+    def beta(self, t):
+        """
+        `t` has shape (B,) where B is the batch size
+        Compute beta at timestep t. We compute this for a batch of timesteps t.
+        
+        "We set T to 100 and β to constants increasing linearly from β_1 = 10^{−4} to β_T = 0.06" -- Section 4.1 of https://arxiv.org/abs/2105.02446
+
+        Each timestep must be in {1, ..., T} and we will have beta increase linearly from t=1 to t=T
+        """
+        slope = (self.beta_max - self.beta_min) / (self.T - 1) # scalar
+        beta = slope * (t - 1) + self.beta_min # shape (B,) --  have line pass through the point (t=1, beta=beta_min)
+        return 
+    
+    def alpha(self, t):
+        return 1 - self.beta(t)
+
+    def alpha_bar(self, t):
+        """
+        `t` has shape (B,) where B is the batch size
+        alpha_bar(t) := alpha(1) * alpha(2) * ... * alpha(t)
+
+        I'm just going to precompute all possible values of alpha_bar so we don't recompute the products all the time. 
+        Not sure if this even matters much in terms of computational cost, but surely it doesn't hurt.
+        """
+        return self.alpha_bars[t-1] # shape (B,) -- we subtract 1 from t because index 0 in self.alpha_bars corresponds to timestep 1, etc.
+
+    def precompute_alpha_bars(self):
+        """actually precomputing all of the alpha_bar values for all possible timesteps, to be indexed by `alpha_bar` method"""
+        timesteps = torch.arange(1, self.T+1) # shape (T,) -- timesteps {1, ..., T}
+        alphas = self.alpha(timesteps) # shape (T,)
+        self.alpha_bars = torch.cumprod(alphas, dim=0) # shape (T,)
+
+    def get_interpolant(self, mel, epsilon, t):
+        """
+        `mel` has shape (B, M, T) and is the ground-truth (normalized) mel-spectrogram (i.e., pure data)
+        `epsilon` has shape (B, M, T) and is isotropic gaussian noise
+        `t` has shape (B,) and is a batch of timesteps
+        This method computes the interpolant between pure data and pure noise, which gets fed as input into the denoiser,
+        see Algorithm 1 in the DiffSinger paper https://arxiv.org/abs/2105.02446
+        """
+        alpha_bar = self.alpha_bar(t)[:, None, None] # shape (B, 1, 1) so it broadcasts on the next line
+        interpolant = math.sqrt(alpha_bar) * mel + math.sqrt(1 - alpha_bar) * epsilon # shape (B, M, T)
+        return interpolant # this is the "noisy" mel-spectrogram that we input into the denoiser
+
 
 def print0(s="", **kwargs):
     rank = int(os.environ.get('RANK', 0))
