@@ -37,9 +37,10 @@ val_songs = ["popcs-夏天的风", "popcs-稻香"]  # your choice, just not the 
 [model]
 model_type = "EncoderDecoder"
 
-pad_token_id = 0 # maybe add a sanity check in training code that it matches with the vocab.json from the dataset that you end up loading
+pad_token_id = 0 # maybe add a sanity check in training code that it matches with the vocab.json from the dataset that you end up loading, TODO
 vocab_size = 60
 
 dilation_cycle_length = 4 # for wavenet
 num_wavenet_layers = 20
 sinusoidal_base = 10000
+max_seq_len = 4096

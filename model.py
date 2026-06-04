@@ -174,7 +174,7 @@ class PhonemeTextEncoder(nn.Module):
         head_dim = config['embedding_dim'] // config['num_attention_heads']
         assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
 
-        cos, sin = precompute_rotary_embeddings(seq_len=config.max_seq_len, head_dim=head_dim, base=config.rotary_base)
+        cos, sin = precompute_rotary_embeddings(seq_len=config['max_seq_len'], head_dim=head_dim, base=config.rotary_base)
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
 
@@ -246,12 +246,12 @@ class AuxiliaryDecoder(nn.Module):
         super().__init__()
         self.num_blocks = config['num_blocks'] # they use 6 apparently, see e.g. Section 4.2 https://arxiv.org/abs/1905.09263
         self.blocks = nn.ModuleList([Block(config) for _ in range(config['num_blocks'])])
-        self.W = nn.Linear(config['embedding_dim'], config['mel_bins']) # e.g. project from 256 to 80
+        self.W = nn.Linear(config['embedding_dim'], config['num_mel_bins']) # e.g. project from 256 to 80
 
         head_dim = config['embedding_dim'] // config['num_attention_heads']
         assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
 
-        cos, sin = precompute_rotary_embeddings(seq_len=config.max_seq_len, head_dim=head_dim, base=config.rotary_base)
+        cos, sin = precompute_rotary_embeddings(seq_len=config['max_seq_len'], head_dim=head_dim, base=config.rotary_base)
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
     

@@ -1,0 +1,22 @@
+# default config for binarizing PopCS data
+
+[audio]
+sample_rate = 24000
+hop_size = 128
+window_size = 512
+n_mels = 80
+min_freq = 40.0 # Hz
+max_freq = 12000.0 # Hz
+mel_center = true # default in librosa
+mel_log_clip = 1e-5
+
+[f0]
+extractor = "parselmouth"   # "parselmouth" | "harvest"
+f0_min    = 50.0
+f0_max    = 1100.0
+
+[data]
+raw_data_dir = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/popcs"
+save_dir = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data"
+test_songs  = ["popcs-说散就散", "popcs-隐形的翅膀"]
+val_songs = ["popcs-夏天的风", "popcs-稻香"]  # your choice, just not the test songs (DiffSinger effectively made test and val sets equal to each other, I won't do that)
