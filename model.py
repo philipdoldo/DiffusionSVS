@@ -169,7 +169,8 @@ class Block(nn.Module):
 class PhonemeTextEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.token_embbeddings = nn.Embedding(config['vocab_size'], config['embedding_dim'], config['pad_token_id'])
+        self.token_embeddings = nn.Embedding(config['vocab_size'], config['embedding_dim'], config['pad_token_id'])
+        self.dropout = config['dropout']
 
         head_dim = config['embedding_dim'] // config['num_attention_heads']
         assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
@@ -188,7 +189,7 @@ class PhonemeTextEncoder(nn.Module):
         `cond` has shape (B, P, embedding_dim) -- embeddings to condition on -- in practice, this will be the phoneme duration embeddings created in the music score encoder forward pass
         """
         tok_embs = self.token_embeddings(token_ids) # (B, P, embedding_dim)
-        B, P, embedding_dim = token_ids.shape
+        B, P, embedding_dim = tok_embs.shape
         cos_sin = self.cos, self.sin
 
         x = tok_embs * math.sqrt(embedding_dim) # scale embeddings by sqrt(d)

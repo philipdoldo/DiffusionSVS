@@ -157,7 +157,13 @@ class NaiveDataLoader:
         else:
             batch = self._compute_next_batch()
 
-        if device.type == "cuda": 
+        # TODO, is there a cleaner way to handle this?
+        if isinstance(device, str):
+            is_cuda = device.startswith("cuda")
+        else:
+            is_cuda = device.type == "cuda"
+
+        if is_cuda: 
             batch = {k : v.pin_memory().to(device, non_blocking=True) for k, v in batch.items()}
         else:
             print(f"{device=}, {device.type=}")
