@@ -46,7 +46,7 @@ embedding_dim = 256
 
 num_blocks = 6 # for decoder and encoder I guess
 num_attention_heads = 2 # yes, this is what they used
-max_seq_len = 4096
+max_seq_len = 32768
 rotary_base = 10000
 
 dropout = 0.1

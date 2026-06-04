@@ -127,7 +127,7 @@ class BidirectionalSelfAttention(nn.Module):
         # att = q @ k.transpose(-2, -1) * (1.0 / math.sqrt(k.shape[-1])) # (batch_size, num_heads, seq_len, seq_len)
         # att = F.softmax(att, dim=-1)
         # y = att @ v # (batch_size, num_heads, seq_len, seq_len) x (batch_size, num_heads, seq_len, head_dim) -> (batch_size, num_heads, seq_len, head_dim)
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=False, attn_mask=attn_mask)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=False, attn_mask=attn_mask[:, None, None, :]) # attn mask needs to broadcast with the tensor of attention matrices which has shape (B, num_heads, query_seq_len, key_seq_len), in our case query_seq_len = key_seq_len
         y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, embed_dim)
         return self.Wo(y)
 
@@ -268,8 +268,9 @@ class AuxiliaryDecoder(nn.Module):
         x = rmsnorm(x) # (B, T, d)
         for block in self.blocks:
             x = block(x=x, cos_sin=cos_sin, attn_mask=attn_mask)
-        x = self.W(x)
-        return x # (B, T, M)
+        x = self.W(x) # (B, T, M)
+        x = x.transpose(-1, -2) # (B, M, T)
+        return x # (B, M, T)
 
 
 class EncoderDecoder(nn.Module):

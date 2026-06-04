@@ -27,7 +27,7 @@ def get_loss_function(config):
 def L1_loss(ground_truth_mel, output_mel, mel_padding_mask):
     """
     `ground_truth_mel` is the ground-truth mel-spectrogram and `output_mel` is the mel-spectrogram output from the model.
-        Both have shape (B, T, M)
+        Both have shape (B, M, T)
     `mel_padding_mask` is True when mel-frames correspond to padding.
         shape (B, T)
     
@@ -38,12 +38,13 @@ def L1_loss(ground_truth_mel, output_mel, mel_padding_mask):
     """
     mask = torch.logical_not(mel_padding_mask) # (B, T)
     counts = mask.sum(dim=1) # (B,)
-    mask = mask[..., None] # (B, T, 1)
+    mask = mask[:, None, :] # (B, 1, T)
     B, T, M = ground_truth_mel.shape
-    target = ground_truth_mel * mask # (B, T, M)
-    pred = output_mel * mask # (B, T, M)
-    diff = target - pred # (B, T, M)
-    loss = torch.abs(diff).sum(dim=(1,2)) / (counts * M) # normalize by T * M to take the average over all terms, but we use `counts` instead of `T` because we don't want to average over padding terms
+    target = ground_truth_mel * mask # (B, M, T)
+    pred = output_mel * mask # (B, M, T)
+    diff = target - pred # (B, M, T)
+    loss = torch.abs(diff).sum(dim=(1,2)) / (counts * M) # shape (B,) -- normalize by T * M * B to take the average over all terms, but we use `counts` instead of `T` because we don't want to average over padding terms
+    loss = torch.sum(loss) / B # average over all batches
     return loss
 
 
