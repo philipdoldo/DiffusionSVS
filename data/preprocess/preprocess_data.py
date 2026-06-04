@@ -14,7 +14,7 @@ import random
 from pathlib import Path
 import argparse
 import textgrid
-import tomllib
+import toml
 
 
 def build_phoneme_vocab(raw_data_dir: str, save_dir: str) -> dict[str, int]:
@@ -107,8 +107,8 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, required=True, help=".toml file")
     args = parser.parse_args()
 
-    with open(args.config, "rb") as f:
-        config = tomllib.load(f)
+    with open(args.config, "r") as f:
+        config = toml.load(f)
     config = config['data']
 
     vocab = build_phoneme_vocab(

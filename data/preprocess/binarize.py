@@ -23,7 +23,7 @@ import librosa
 import parselmouth
 import argparse
 import textgrid
-import tomllib
+import toml
 import json
 import h5py
 from pathlib import Path
@@ -216,8 +216,8 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, required=True, help=".toml file")
     args = parser.parse_args()
 
-    with open(args.config, "rb") as f:
-        config = tomllib.load(f)
+    with open(args.config, "r") as f:
+        config = toml.load(f)
 
     raw_data_dir = Path(config["data"]["raw_data_dir"])
     save_dir = Path(config["data"]["save_dir"])
