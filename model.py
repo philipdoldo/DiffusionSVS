@@ -155,7 +155,7 @@ class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.attn = BidirectionalSelfAttention(config)
-        self.mlp = MLP(input_dim=config.embed_dim, hidden_dim=4*config.embed_dim, output_dim=config.embed_dim)
+        self.mlp = MLP(input_dim=config['embedding_dim'], hidden_dim=4*config['embedding_dim'], output_dim=config['embedding_dim'])
 
     def forward(self, x, cos_sin, attn_mask):
         """
@@ -174,7 +174,7 @@ class PhonemeTextEncoder(nn.Module):
         head_dim = config['embedding_dim'] // config['num_attention_heads']
         assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
 
-        cos, sin = precompute_rotary_embeddings(seq_len=config['max_seq_len'], head_dim=head_dim, base=config.rotary_base)
+        cos, sin = precompute_rotary_embeddings(seq_len=config['max_seq_len'], head_dim=head_dim, base=config['rotary_base'])
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
 
@@ -251,7 +251,7 @@ class AuxiliaryDecoder(nn.Module):
         head_dim = config['embedding_dim'] // config['num_attention_heads']
         assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
 
-        cos, sin = precompute_rotary_embeddings(seq_len=config['max_seq_len'], head_dim=head_dim, base=config.rotary_base)
+        cos, sin = precompute_rotary_embeddings(seq_len=config['max_seq_len'], head_dim=head_dim, base=config['rotary_base'])
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
     
