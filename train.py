@@ -2,7 +2,7 @@ import argparse
 import toml
 import time
 import os
-import datetime
+from datetime import datetime
 import math
 import torch
 import torch.distributed as dist
