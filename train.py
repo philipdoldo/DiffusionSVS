@@ -124,24 +124,23 @@ if __name__ == "__main__":
     with open(args.config, "rb") as f:
         config = tomllib.load(f)
     
-    effective_batch_size = config["effective_batch_size"]
-    batch_size = config["batch_size"]
-    grad_accum_steps = config["grad_accum_steps"]
-    training_steps = config["training_steps"]
+    effective_batch_size = config["training"]["effective_batch_size"]
+    batch_size = config["training"]["batch_size"]
+    grad_accum_steps = config["training"]["grad_accum_steps"]
+    training_steps = config["training"]["training_steps"]
 
-    val_loss_interval = config["val_loss_interval"]
-    checkpoint_interval = config["checkpoint_interval"]
-    text_sample_interval = config["text_sample_interval"]
+    val_loss_interval = config["training"]["val_loss_interval"]
+    checkpoint_interval = config["training"]["checkpoint_interval"]
 
-    save_dir = config["save_dir"]
+    save_dir = config["training"]["save_dir"]
 
     log_dir = create_log_dir(save_dir, config_name=os.path.basename(args.config))
 
     # Learning Rate Schedule (Cosine Decay -- warmup + constant if you let min_lr = max_lr and cosine_decay_steps=0)
-    warmup_steps = config["warmup_steps"]
-    max_lr = config["max_lr"]
-    min_lr = config.get("min_lr", max_lr/10)
-    lr_decay_steps = config.get("cosine_decay_steps", training_steps - warmup_steps)
+    warmup_steps = config["training"]["warmup_steps"]
+    max_lr = config["training"]["max_lr"]
+    min_lr = config["training"].get("min_lr", max_lr/10)
+    lr_decay_steps = config["training"].get("cosine_decay_steps", training_steps - warmup_steps)
     def get_lr(it):
         # 1) linear warmup for warmup_steps steps
         if it < warmup_steps:
@@ -164,8 +163,8 @@ if __name__ == "__main__":
     else:
         raise ValueError(f"{model_config['model_type']=}")
 
-    if config.get("resume_training", False):
-        checkpoint = torch.load(config["checkpoint_path"], map_location="cpu")
+    if config["training"].get("resume_training", False):
+        checkpoint = torch.load(config["training"]["checkpoint_path"], map_location="cpu")
         # If we resume training, we change the rng seed in the config as a lazy way making sure we don't get the same random times and such
         # I didn't bother storing rng state of each rank because I might resume with a different number of gpus anyway and it is simpler this way
         # The checkpoint stores a set of all rng seeds used across all training runs to be sure we never repeat any of them (the gpus I'm using can have a lot of issues)
@@ -173,8 +172,8 @@ if __name__ == "__main__":
             raise ValueError(f"Change the rng seed in the config before you resume training! {checkpoint['rng_seeds']=}, {config["training"]['rng_seed']=}")
 
         model.load_state_dict(checkpoint["model"])
-        print0(f"MODEL LOADED WITH CHECKPOINT {config['checkpoint_path']}\n")
-    prior_rng_seeds = checkpoint["rng_seeds"] if config.get("resume_training", False) else set() # to be stored in checkpoint to be sure we don't accidentally resume training with a previously used rng seed
+        print0(f"MODEL LOADED WITH CHECKPOINT {config["training"]['checkpoint_path']}\n")
+    prior_rng_seeds = checkpoint["rng_seeds"] if config["training"].get("resume_training", False) else set() # to be stored in checkpoint to be sure we don't accidentally resume training with a previously used rng seed
     prior_rng_seeds.add(config["training"]["rng_seed"])
 
     ddp = int(os.environ.get('RANK', -1)) != -1
@@ -230,21 +229,21 @@ if __name__ == "__main__":
     num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     write0(f"Model Parameters: {num_params:,}\nTrainable Model Parameters: {num_trainable_params:,}\n", log_file=log_file)
 
-    train_loader = NaiveDataLoader(data_path=config["train_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"])
+    train_loader = NaiveDataLoader(data_path=config["training"]["train_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"])
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        weight_decay=config["AdamW_weight_decay"],
-        betas=config["AdamW_betas"],
-        eps=config["AdamW_epsilon"],
+        weight_decay=config["training"]["AdamW_weight_decay"],
+        betas=config["training"]["AdamW_betas"],
+        eps=config["training"]["AdamW_epsilon"],
         fused=True
         )
     
-    ema = ExponentialMovingAverage(params=model.parameters(), decay=config["ema_decay"])
+    ema = ExponentialMovingAverage(params=model.parameters(), decay=config["training"]["ema_decay"])
 
     loss_function = get_loss_function(config['training']['loss'])
 
-    if config.get("resume_training", False):
+    if config["training"].get("resume_training", False):
         optimizer.load_state_dict(checkpoint["optimizer"])
         ema.load_state_dict(checkpoint["ema"], device=device)
 
@@ -256,7 +255,7 @@ if __name__ == "__main__":
 
         initial_step = checkpoint["step"]
 
-        write0(f"RESUMING TRAINING WITH CHECKPOINT {config['checkpoint_path']} AT STEP {initial_step}\n", log_file=log_file)
+        write0(f"RESUMING TRAINING WITH CHECKPOINT {config["training"]['checkpoint_path']} AT STEP {initial_step}\n", log_file=log_file)
     else:
         initial_step = 0 # if not resuming training, have training loop start at step 0
 
@@ -297,13 +296,13 @@ if __name__ == "__main__":
                 
                 t0 = time.time()
                 rng_state = torch.get_rng_state() # val might change rng state on rank 0, so save and restore it just in case, probably not very important
-                val_loader = NaiveDataLoader(data_path=config["val_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"]) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
+                val_loader = NaiveDataLoader(data_path=config["training"]["val_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"]) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
                 val_loader.reset() # should be unnecessary
 
                 ema.store(model.parameters()) # store copy of the actual model weights
                 ema.copy_to(model.parameters()) # copy EMA weights into the model
                 val_losses = []
-                for val_step in range(config.get("val_steps", 98)):
+                for val_step in range(config["training"].get("val_steps", 98)):
                     val_batch = val_loader.next_batch(device=device)
 
                     # whatever, I'm just hardcoding this for now...
