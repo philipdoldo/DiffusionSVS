@@ -9,24 +9,28 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from models.model import MusicScoreEncoder, AuxiliaryDecoder, WaveNet, EncoderDecoder, WaveNetDenoiser
-from DiffSinger.training.exponential_moving_average import ExponentialMovingAverage
-from DiffSinger.data.dataloader import NaiveDataLoader
+from training.exponential_moving_average import ExponentialMovingAverage
+from data.dataloader import NaiveDataLoader
+from loss_functions import get_loss_function
 
 """
 TODO:
     - get stats to normalize mel-spectrograms (don't need to unnormalize outputs I think, vocoder should accept normalized inputs) -- modify binarize.py
         - save config when generating dataset and put in a nicer directory maybe
         - get stats (min, max, mean, median, std) for f0 as well since in Section 4.1 they claim to standardize f0
-    - get loss functions defined for both phases of training and handle using them correctly (feeding correct inputs to models, both for train and val, etc.)
-        - need to load models properly depending on which phase of training is being done, just hardcode for now
+    # get loss functions defined for both phases of training and handle using them correctly (feeding correct inputs to models, both for train and val, etc.)
+        # need to load models properly depending on which phase of training is being done, just hardcode for now
     - get vocoder set up to test inference
 """
 
 class DiffusionProcess:
     def __init__(self, beta_min: float=1e-4, beta_max: float=0.06, T: int=100):
-        """see Implementation Details in Section 4.1 https://arxiv.org/abs/2105.02446 which motivates the default values"""
+        """
+        See Implementation Details in Section 4.1 https://arxiv.org/abs/2105.02446 which motivates the default values
+        Note: with defaults we have (1 - diffusion.alpha_bar(100))**(0.5) = 0.9764 for the full noise weight in the interpolant
+        """
         self.beta_min = beta_min # beta_1 -- t=1 should be (approximately) pure data
-        self.beta_max = beta_max # beta_T -- t=T shouldbe pure noise (not sure why they use 0.06)
+        self.beta_max = beta_max # beta_T -- t=T shouldbe pure noise (not sure why they use 0.06, it makes alpha_bar close enough I guess?)
         self.T = T # the maximum diffusion time step
         self.precompute_alpha_bars() # precompute all of the alpha_bar values, see docstrings in `alpha_bar` and `precompute_alpha_bars` methods
 
@@ -41,7 +45,7 @@ class DiffusionProcess:
         """
         slope = (self.beta_max - self.beta_min) / (self.T - 1) # scalar
         beta = slope * (t - 1) + self.beta_min # shape (B,) --  have line pass through the point (t=1, beta=beta_min)
-        return 
+        return beta
     
     def alpha(self, t):
         return 1 - self.beta(t)
@@ -110,6 +114,9 @@ def freeze(model):
 
 if __name__ == "__main__":
 
+    diffusion = DiffusionProcess()
+    import code; code.interact(local=locals())
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help=".toml file")
     args = parser.parse_args()
@@ -162,13 +169,13 @@ if __name__ == "__main__":
         # If we resume training, we change the rng seed in the config as a lazy way making sure we don't get the same random times and such
         # I didn't bother storing rng state of each rank because I might resume with a different number of gpus anyway and it is simpler this way
         # The checkpoint stores a set of all rng seeds used across all training runs to be sure we never repeat any of them (the gpus I'm using can have a lot of issues)
-        if config["rng_seed"] in checkpoint["rng_seeds"]:
-            raise ValueError(f"Change the rng seed in the config before you resume training! {checkpoint['rng_seeds']=}, {config['rng_seed']=}")
+        if config["training"]["rng_seed"] in checkpoint["rng_seeds"]:
+            raise ValueError(f"Change the rng seed in the config before you resume training! {checkpoint['rng_seeds']=}, {config["training"]['rng_seed']=}")
 
         model.load_state_dict(checkpoint["model"])
         print0(f"MODEL LOADED WITH CHECKPOINT {config['checkpoint_path']}\n")
     prior_rng_seeds = checkpoint["rng_seeds"] if config.get("resume_training", False) else set() # to be stored in checkpoint to be sure we don't accidentally resume training with a previously used rng seed
-    prior_rng_seeds.add(config["rng_seed"])
+    prior_rng_seeds.add(config["training"]["rng_seed"])
 
     ddp = int(os.environ.get('RANK', -1)) != -1
 
@@ -223,7 +230,7 @@ if __name__ == "__main__":
     num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     write0(f"Model Parameters: {num_params:,}\nTrainable Model Parameters: {num_trainable_params:,}\n", log_file=log_file)
 
-    train_loader = NaiveDataLoader(data_path=config["train_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["rng_seed"])
+    train_loader = NaiveDataLoader(data_path=config["train_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"])
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -234,6 +241,8 @@ if __name__ == "__main__":
         )
     
     ema = ExponentialMovingAverage(params=model.parameters(), decay=config["ema_decay"])
+
+    loss_function = get_loss_function(config['training']['loss'])
 
     if config.get("resume_training", False):
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -251,9 +260,15 @@ if __name__ == "__main__":
     else:
         initial_step = 0 # if not resuming training, have training loop start at step 0
 
-    torch.manual_seed(config["rng_seed"] + rank) # (I guess this affects the categorical sampling, random times are in the dataloader)
-    ctmc = UniformCTMC(config) # TODO fix this and figure out training losses and such
-
+    torch.manual_seed(config["training"]["rng_seed"] + rank) # (I guess this affects the categorical sampling, random times are in the dataloader)
+    if config['model']['model_type'] == "WaveNetDenoiser": # just hardcoding some stuff like this for now...
+        diffusion = DiffusionProcess(
+            beta_min=config['training']['diffusion']['beta_min'], 
+            beta_max=config['training']['diffusion']['beta_max'], 
+            T=config['training']['diffusion']['T']
+            )
+        
+    # TRAINING LOOP
     for step in range(initial_step, training_steps):
 
         # SAVE CHECKPOINTS
@@ -276,6 +291,7 @@ if __name__ == "__main__":
                 t1 = time.time()
                 write0(f" --- Checkpoint saved to {checkpoint_path} in {t1-t0:.4f}s\n", log_file=log_file)
 
+        # VALIDATION LOSS
         if rank == 0 and (step % val_loss_interval == 0 or step == training_steps - 1): # TODO
             with torch.no_grad():
                 
@@ -288,10 +304,37 @@ if __name__ == "__main__":
                 ema.copy_to(model.parameters()) # copy EMA weights into the model
                 val_losses = []
                 for val_step in range(config.get("val_steps", 98)):
-                    val_x0, val_t = val_loader.next_batch()
-                    val_x0 = val_x0.to(device)
-                    val_t = val_t.to(device)
-                    val_loss = ctmc.loss_DWDSE(log_score_model=model, x_0=val_x0, t=val_t)
+                    val_batch = val_loader.next_batch(device=device)
+
+                    # whatever, I'm just hardcoding this for now...
+                    val_ground_truth_mel = val_batch['mel']
+                    if config['model']['model_type'] == "WaveNetDenoiser": # just hardcoding some stuff like this for now...
+
+                        val_interpolant = diffusion.get_interpolant(mel=val_ground_truth_mel, epsilon=val_batch['epsilon'], t=val_batch['t'])
+
+                        val_model_output = model(
+                            txt_tokens=val_batch['txt_tokens'], 
+                            mel2ph=val_batch['mel2ph'],
+                            f0=val_batch['f0'], # TODO need to standardize? probably do in collator?
+                            uv=val_batch['uv'], 
+                            ph_padding_mask=val_batch['ph_padding_mask'], 
+                            mel_padding_mask=val_batch['mel_padding_mask'],
+                            mel=val_interpolant, 
+                            t=val_batch['t']
+                            )
+                    elif config['model']['model_type'] == "EncoderDecoder":
+                        val_model_output = model(
+                            txt_tokens=val_batch['txt_tokens'],
+                            mel2ph=val_batch['mel2ph'],
+                            f0=val_batch['f0'],
+                            uv=val_batch['uv'],
+                            ph_padding_mask=val_batch['ph_padding_mask'],
+                            mel_padding_mask=val_batch['mel_padding_mask']
+                            )
+                    else:
+                        raise ValueError(f"{config['model']['model_type']=}")
+
+                    val_loss = loss_function(ground_truth_mel=val_ground_truth_mel, output_mel=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
                     val_losses.append(val_loss)
                 val_loss = sum(val_losses) / len(val_losses)
                 ema.restore(model.parameters()) # copy stored model weights back into the model
@@ -299,15 +342,13 @@ if __name__ == "__main__":
                 t1 = time.time()
                 write0(f"val loss: {val_loss}{' '*(8 - len(str(step)))}{(t1-t0)*1000:.0f}ms\n", log_file=log_file)
 
+        # TRAINING
         torch.cuda.synchronize()
         t0 = time.time()
-
         train_loss = 0.0 # for logging
         for micro_step in range(grad_accum_steps):
 
-            x0, t = train_loader.next_batch()
-            x0 = x0.to(device)
-            t = t.to(device)
+            batch = train_loader.next_batch(device=device)
 
             if ddp: # only sync gradients on the last micro step
                 model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
@@ -316,7 +357,34 @@ if __name__ == "__main__":
             # per_gpu_batch_size in the denominator (since the loss is averaged over the local batch) and then when we sync gradients with
             # the .backward() call (with require_backward_grad_sync True), they are averaged over all ranks, so the resulting gradient has
             # per_gpu_batch_size * num_gpus in the denominator. Dividing the loss by grad_accum_steps gives us the correct final denominator.
-            loss = ctmc.loss_DWDSE(log_score_model=model, x_0=x0, t=t) / grad_accum_steps
+            ground_truth_mel = batch['mel'] # TODO need to normalize? probably do in collator and rename collator to pad and norm or something
+            if config['model']['model_type'] == "WaveNetDenoiser": # just hardcoding some stuff like this for now...
+
+                interpolant = diffusion.get_interpolant(mel=ground_truth_mel, epsilon=batch['epsilon'], t=batch['t'])
+
+                model_output = model(
+                    txt_tokens=batch['txt_tokens'], 
+                    mel2ph=batch['mel2ph'],
+                    f0=batch['f0'], # TODO need to standardize? probably do in collator?
+                    uv=batch['uv'], 
+                    ph_padding_mask=batch['ph_padding_mask'], 
+                    mel_padding_mask=batch['mel_padding_mask'],
+                    mel=interpolant, 
+                    t=batch['t']
+                    )
+            elif config['model']['model_type'] == "EncoderDecoder":
+                model_output = model(
+                    txt_tokens=batch['txt_tokens'],
+                    mel2ph=batch['mel2ph'],
+                    f0=batch['f0'],
+                    uv=batch['uv'],
+                    ph_padding_mask=batch['ph_padding_mask'],
+                    mel_padding_mask=batch['mel_padding_mask']
+                    )
+            else:
+                raise ValueError(f"{config['model']['model_type']=}")
+
+            loss = loss_function(ground_truth_mel=ground_truth_mel, output_mel=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
             train_loss += loss.detach() # for logging
             loss.backward()
 

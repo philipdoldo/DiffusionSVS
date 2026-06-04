@@ -9,30 +9,41 @@ import h5py
 from torch.nn.utils.rnn import pad_sequence
 
 
-def pad_collate_fn(batch, padding_value):
+def pad_and_norm_collate_fn(batch, padding_value):
     """`batch` is a dictionary of lists of tensors"""
     # (T,) tensors -- pad along T to (B, T_max)
-    f0         = pad_sequence(batch["f0"],         batch_first=True, padding_value=padding_value)
-    mel2ph     = pad_sequence(batch["mel2ph"],     batch_first=True, padding_value=padding_value)
-    uv         = pad_sequence(batch["uv"],         batch_first=True, padding_value=padding_value)
+    f0         = pad_sequence(batch["f0"],         batch_first=True, padding_value=padding_value) # (B, T_max)
+    mel2ph     = pad_sequence(batch["mel2ph"],     batch_first=True, padding_value=padding_value) # (B, T_max)
+    uv         = pad_sequence(batch["uv"],         batch_first=True, padding_value=padding_value) # (B, T_max)
 
     # (M, T) tensors -- transpose to (T, M), pad to (B, T_max, M), transpose back -- pad_sequence always pads along dimension 0
-    mel        = pad_sequence([m.T for m in batch["mel"]], batch_first=True, padding_value=padding_value).permute(0, 2, 1)
+    mel        = pad_sequence([m.T for m in batch["mel"]], batch_first=True, padding_value=padding_value).permute(0, 2, 1) # (B, M, T_max)
 
     # (P,) tensors -- pad along P to (B, P_max)
-    txt_tokens = pad_sequence(batch["txt_tokens"], batch_first=True, padding_value=padding_value)
+    txt_tokens = pad_sequence(batch["txt_tokens"], batch_first=True, padding_value=padding_value) # (B, P_max)
 
-    padded_batch = {
+    # Compute masks: True if padding, False otherwise
+    mel_lengths = torch.tensor([x.shape[-1] for x in batch["mel"]]) # (B,)
+    txt_lengths = torch.tensor([x.shape[0] for x in batch["txt_tokens"]]) # (B,)
+    T_max = mel.shape[-1]
+    P_max = txt_tokens.shape[-1]
+    mel_mask = torch.arange(T_max)[None, :] >= mel_lengths[:, None] # (B, T_max)
+    txt_mask = torch.arange(P_max)[None, :] >= txt_lengths[:, None] # (B, P_max)
+    
+    # TODO add f0_stats and mel_stats args and do normalization/standarization here
+
+    collated_batch = {
         'f0' : f0,
         'mel' : mel,
         'mel2ph' : mel2ph,
         'uv' : uv,
-        'txt_tokens' : txt_tokens
+        'txt_tokens' : txt_tokens,
+        'mel_padding_mask' : mel_mask,
+        'ph_padding_mask' : txt_mask,
     }
-    # for k, v in padded_batch.items(): # TODO, possibly do this instead in case there are other keys that we don't want to process in the collate function
-    #     batch[k] = v
-    # return batch
-    return padded_batch
+    for k, v in collated_batch.items(): # do this in case there are other keys that we don't want to process in the collate function that we don't want to lose
+        batch[k] = v
+    return batch
 
 
 class NaiveDataLoader:
@@ -43,6 +54,9 @@ class NaiveDataLoader:
 
     State can be saved and restored via `get_state_dict()` and `load_state_dict()` for resuming training runs. Note: if prefetching is enabled, the queue is drained 
     before saving state so that no batches are skipped or repeated on resume.
+
+    `diffusion_k` is the integer value from Algorithm 1 of DiffSinger such that we sample random timesteps from the set {1, ..., k} during training if doing diffusion. If
+    `diffusion_k` is None, then we do not do diffusion.
     """
 
     def __init__(
@@ -52,6 +66,9 @@ class NaiveDataLoader:
         padding_value: int,
         rng_seed: int = 21,
         prefetch_batches: int = 2,
+        collate_fn: callable = pad_and_norm_collate_fn,
+        diffusion_k: int = None,
+        # TODO add f0_stats and mel_stats args
     ):
         self.data_path = data_path
         with h5py.File(data_path, "r") as f:
@@ -59,6 +76,8 @@ class NaiveDataLoader:
         self.batch_size = batch_size
         self.padding_value = padding_value
         self.prefetch_batches = prefetch_batches
+        self.collate_fn = collate_fn
+        self.diffusion_k = diffusion_k
 
         if dist.is_available() and dist.is_initialized():
             self.world_size = dist.get_world_size()
@@ -114,10 +133,16 @@ class NaiveDataLoader:
         if self.current_position + self.batch_size * self.world_size >= len(self.utterances):
             self.reset()
 
-        padded_batch = pad_collate_fn(batch, padding_value=self.padding_value)
+        if self.diffusion_k is not None:
+            epsilon = torch.randn_like(_mel)
+            t = torch.randint(1, self.diffusion_k+1, shape=(self.batch_size,)) # random integer in {1, ..., k}
+            batch['epsilon'] = epsilon
+            batch['t'] = t
+
+        collated_batch = self.collate_fn(batch, padding_value=self.padding_value) # TODO add f0_stats and mel_stats args
 
         # TODO maybe generate and return diffsion time steps as well, if so create a new dict key called time_steps or something
-        return padded_batch
+        return collated_batch
 
     def _prefetch_worker(self):
         while not self._stop_event.is_set():

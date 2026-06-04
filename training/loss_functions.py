@@ -1,5 +1,27 @@
 import torch
 
+def get_loss_function(config):
+    weights = {
+        'l1': config.get('l1_weight', 0),
+        'ssim': config.get('ssim_weight', 0),
+    }
+    loss_fns = {
+        'l1': L1_loss,
+        'ssim': ssim_loss,
+    }
+
+    def loss(ground_truth_mel, output_mel, mel_padding_mask):
+        at_least_one_nonzero_loss_weight = False
+        total = 0.0
+        for name, w in weights.items():
+            if w != 0.0:
+                total = total + w * loss_fns[name](ground_truth_mel, output_mel, mel_padding_mask)
+                at_least_one_nonzero_loss_weight = True
+        if not at_least_one_nonzero_loss_weight:
+            raise ValueError(f"{config=}")
+        return total
+
+    return loss
 
 
 def L1_loss(ground_truth_mel, output_mel, mel_padding_mask):
@@ -26,3 +48,6 @@ def L1_loss(ground_truth_mel, output_mel, mel_padding_mask):
 
 
 # TODO, define ssim loss because they use linear combination of l1 and ssim, see https://github.com/MoonInTheRiver/DiffSinger/blob/ce7789f1427ddcdec647b3ab2bf2d1b12134e51e/modules/commons/ssim.py#L354
+
+def ssim_loss(ground_truth_mel, output_mel, mel_padding_mask):
+    return None # TODO -- be sure to account for padding properly

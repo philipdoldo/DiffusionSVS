@@ -1,5 +1,16 @@
+
+[training]
 train_data_path = "/home/phil/DiffSinger/binarized_data/train.h5"
 rng_seed = 21
+
+[training.diffusion]
+beta_min = 1e-4
+beta_max = 0.06
+T = 100
+k = 100 # the intersection point used in Algorithm 1 of DiffSinger, could use e.g. k=40 or try predicting k
+
+[training.loss]
+l1_weight = 1
 
 [audio]
 sample_rate = 24000

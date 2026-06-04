@@ -202,7 +202,7 @@ class PhonemeTextEncoder(nn.Module):
         x = rmsnorm(x)
         return x # (B, P, embedding_dim)
 
-class MusicScoreEncoder(nn.module):
+class MusicScoreEncoder(nn.Module):
 
     def __init__(self, config):
         super().__init__()
