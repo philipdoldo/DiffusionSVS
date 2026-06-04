@@ -1,5 +1,4 @@
 import argparse
-import tomllib
 import toml
 import time
 import os
@@ -121,8 +120,8 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, required=True, help=".toml file")
     args = parser.parse_args()
 
-    with open(args.config, "rb") as f:
-        config = tomllib.load(f)
+    with open(args.config, "r") as f:
+        config = toml.load(f)
     
     effective_batch_size = config["training"]["effective_batch_size"]
     batch_size = config["training"]["batch_size"]
