@@ -104,6 +104,12 @@ def create_log_dir(parent_dir, config_name):
         os.makedirs(checkpoint_dir, exist_ok=True)
         sample_dir = os.path.join(log_dir, "samples") # store image samples made during training here
         os.makedirs(sample_dir, exist_ok=True)
+
+    # if using DDP, defined the directory on all ranks to allow any rank to write to the log file if desired
+    if dist.is_available() and dist.is_initialized():
+        obj = [log_dir]
+        dist.broadcast_object_list(obj, src=0)
+        log_dir = obj[0]
     return log_dir
 
 def freeze(model):
@@ -132,8 +138,6 @@ if __name__ == "__main__":
     checkpoint_interval = config["training"]["checkpoint_interval"]
 
     save_dir = config["training"]["save_dir"]
-
-    log_dir = create_log_dir(save_dir, config_name=os.path.basename(args.config))
 
     # Learning Rate Schedule (Cosine Decay -- warmup + constant if you let min_lr = max_lr and cosine_decay_steps=0)
     warmup_steps = config["training"]["warmup_steps"]
@@ -200,6 +204,7 @@ if __name__ == "__main__":
         raise ValueError(f"{effective_batch_size=}, {world_size=}, {batch_size=}, {grad_accum_steps=}, {world_size*batch_size*grad_accum_steps=}")
 
     # Initialize log file
+    log_dir = create_log_dir(save_dir, config_name=os.path.basename(args.config)) # we wait until after DDP to define this and it gets shared across ranks
     log_file = f"{log_dir}/log.txt"
     if rank == 0:
         with open(log_file, 'w') as f:
@@ -400,6 +405,8 @@ if __name__ == "__main__":
         t1 = time.time()
 
         write0(f"Step {step}:{' '*(8 - len(str(step)))}{(t1-t0)*1000:.0f}ms    train loss: {train_loss.item():.6f}    grad norm: {norm.item():.6f}\n", log_file=log_file)
-    
+        # with open(log_file, 'a') as f:
+        #     f.write(f"    {step=}    {rank=}   {batch['ph_padding_mask'].shape=}    {torch.sum(batch['ph_padding_mask'])=}    {batch['mel_padding_mask'].shape=}    {torch.sum(batch['mel_padding_mask'])=}\n")
+
     if ddp:
         dist.destroy_process_group()

@@ -1,8 +1,8 @@
 #!/bin/bash
 
 #SBATCH --job-name=ed
-#SBATCH --nodes=4
-#SBATCH --ntasks=4
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=16
 #SBATCH -o /mnt/data_r60_1/adv_robust_project/DiffusionSVS/logs/train_%A.log
