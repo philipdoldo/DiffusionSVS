@@ -307,7 +307,7 @@ if __name__ == "__main__":
                 ema.store(model.parameters()) # store copy of the actual model weights
                 ema.copy_to(model.parameters()) # copy EMA weights into the model
                 val_losses = []
-                for val_step in range(config["training"].get("val_steps", 98)):
+                for val_step in range(config["training"].get("val_steps", 1)):
                     val_batch = val_loader.next_batch(device=device)
 
                     # whatever, I'm just hardcoding this for now...
