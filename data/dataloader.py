@@ -32,10 +32,12 @@ def pad_and_norm_collate_fn(batch, padding_value, stats=None):
     
     if stats is not None:
         # normalize mel-spectrograms to [-1, 1]
-        mel = 2 * (mel - stats['mel_min']) / (stats['mel_max'] - stats['mel_min']) - 1
+        mel_min = stats['mel_min'][None, :, None] # (1, M, 1)
+        mel_max = stats['mel_max'][None, :, None] # (1, M, 1)
+        mel = 2 * (mel - mel_min) / (mel_max - mel_min) - 1
 
         # standardize f0 to be mean 0 and standard deviation 1
-        f0 = (f0 - stats['f0_mean']) / stats['mel_std']
+        f0 = (f0 - stats['f0_mean']) / stats['f0_std'] # scalar mean and std should broadcast properly
 
     collated_batch = {
         'f0' : f0,

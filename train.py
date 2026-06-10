@@ -7,6 +7,7 @@ import math
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from pathlib import Path
 from model import MusicScoreEncoder, AuxiliaryDecoder, WaveNet, EncoderDecoder, WaveNetDenoiser
 from exponential_moving_average import ExponentialMovingAverage
 from data.dataloader import NaiveDataLoader
@@ -204,7 +205,7 @@ if __name__ == "__main__":
         raise ValueError(f"{effective_batch_size=}, {world_size=}, {batch_size=}, {grad_accum_steps=}, {world_size*batch_size*grad_accum_steps=}")
 
     # Initialize log file
-    log_dir = create_log_dir(save_dir, config_name=os.path.basename(args.config)) # we wait until after DDP to define this and it gets shared across ranks
+    log_dir = create_log_dir(save_dir, config_name=Path(args.config).stem) # we wait until after DDP to define this and it gets shared across ranks
     log_file = f"{log_dir}/log.txt"
     if rank == 0:
         with open(log_file, 'w') as f:
@@ -233,7 +234,7 @@ if __name__ == "__main__":
     num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     write0(f"Model Parameters: {num_params:,}\nTrainable Model Parameters: {num_trainable_params:,}\n", log_file=log_file)
 
-    train_loader = NaiveDataLoader(data_path=config["training"]["train_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"])
+    train_loader = NaiveDataLoader(data_path=config["training"]["train_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"], stats_path=config["training"]["train_data_stats_path"])
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -300,7 +301,7 @@ if __name__ == "__main__":
                 
                 t0 = time.time()
                 rng_state = torch.get_rng_state() # val might change rng state on rank 0, so save and restore it just in case, probably not very important
-                val_loader = NaiveDataLoader(data_path=config["training"]["val_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"]) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
+                val_loader = NaiveDataLoader(data_path=config["training"]["val_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], stats_path=config["training"]["train_data_stats_path"]) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
                 val_loader.reset() # should be unnecessary
 
                 ema.store(model.parameters()) # store copy of the actual model weights

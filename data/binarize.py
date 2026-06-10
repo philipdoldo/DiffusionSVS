@@ -355,7 +355,7 @@ if __name__ == "__main__":
     with open(args.config, "r") as f:
         config = toml.load(f)
 
-    save_dir = create_data_dir(parent_dir=config['data']['save_dir'], config_name=os.path.basename(args.config))
+    save_dir = create_data_dir(parent_dir=config['data']['save_dir'], config_name=Path(args.config).stem)
     raw_data_dir = Path(config["data"]["raw_data_dir"])
 
     with open(os.path.join(save_dir, "config.toml"), "w") as f:

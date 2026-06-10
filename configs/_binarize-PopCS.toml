@@ -16,6 +16,7 @@ f0_min    = 50.0
 f0_max    = 1100.0
 
 [data]
+max_mel_frames = 8000 # truncate to 8000 mel frames
 raw_data_dir = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/popcs"
 save_dir = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data"
 test_songs  = ["popcs-说散就散", "popcs-隐形的翅膀"]
