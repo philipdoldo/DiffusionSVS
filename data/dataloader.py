@@ -9,7 +9,7 @@ import h5py
 from torch.nn.utils.rnn import pad_sequence
 
 
-def pad_and_norm_collate_fn(batch, padding_value):
+def pad_and_norm_collate_fn(batch, padding_value, stats=None):
     """`batch` is a dictionary of lists of tensors"""
     # (T,) tensors -- pad along T to (B, T_max)
     f0         = pad_sequence(batch["f0"],         batch_first=True, padding_value=padding_value) # (B, T_max)
@@ -30,7 +30,12 @@ def pad_and_norm_collate_fn(batch, padding_value):
     mel_mask = torch.arange(T_max)[None, :] >= mel_lengths[:, None] # (B, T_max)
     txt_mask = torch.arange(P_max)[None, :] >= txt_lengths[:, None] # (B, P_max)
     
-    # TODO add f0_stats and mel_stats args and do normalization/standarization here
+    if stats is not None:
+        # normalize mel-spectrograms to [-1, 1]
+        mel = 2 * (mel - stats['mel_min']) / (stats['mel_max'] - stats['mel_min']) - 1
+
+        # standardize f0 to be mean 0 and standard deviation 1
+        f0 = (f0 - stats['f0_mean']) / stats['mel_std']
 
     collated_batch = {
         'f0' : f0,
@@ -68,7 +73,7 @@ class NaiveDataLoader:
         prefetch_batches: int = 2,
         collate_fn: callable = pad_and_norm_collate_fn,
         diffusion_k: int = None,
-        # TODO add f0_stats and mel_stats args
+        stats_path: str = None, # .npz files
     ):
         self.data_path = data_path
         with h5py.File(data_path, "r") as f:
@@ -97,6 +102,12 @@ class NaiveDataLoader:
             self._stop_event = threading.Event()
             self._thread = threading.Thread(target=self._prefetch_worker, daemon=True)
             self._thread.start()
+        
+        # load .npz file containing stats on f0 and mel-spectrograms to be used for normalization inside of the collate function
+        # e.g. mel_mean has shape (mel_bins,) which is typically (80,), f0_mean is a scalar. 
+        self.stats = None
+        if stats_path is not None:
+            self.stats = np.load(stats_path) # self.stats.files = ['mel_mean', 'mel_std', 'mel_min', 'mel_max', 'mel_median', 'f0_mean', 'f0_std', 'f0_min', 'f0_max', 'f0_median']
 
     def reset(self):
         # TODO optionally shuffle self.utterances because we truncate the dataset and shuffling allows us to in principle see the whole dataset
@@ -139,7 +150,7 @@ class NaiveDataLoader:
             batch['epsilon'] = epsilon
             batch['t'] = t
 
-        collated_batch = self.collate_fn(batch, padding_value=self.padding_value) # TODO add f0_stats and mel_stats args
+        collated_batch = self.collate_fn(batch, padding_value=self.padding_value, stats=self.stats) # TODO add f0_stats and mel_stats args
 
         # TODO maybe generate and return diffsion time steps as well, if so create a new dict key called time_steps or something
         return collated_batch

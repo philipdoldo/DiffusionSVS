@@ -16,7 +16,8 @@ f0_min    = 50.0
 f0_max    = 1100.0
 
 [data]
-raw_data_dir    = "/home/phil/DiffSinger/popcs"
-save_dir = "/home/phil/DiffSinger/binarized_data"
+max_mel_frames = 8000 # truncate to 8000 mel frames
+raw_data_dir    = "/home/phil/DiffusionSVS/popcs"
+save_dir = "/home/phil/DiffusionSVS/binarized_data"
 test_songs  = ["popcs-说散就散", "popcs-隐形的翅膀"]
 val_songs = ["popcs-夏天的风", "popcs-稻香"]  # your choice, just not the test songs (DiffSinger effectively made test and val sets equal to each other, I won't do that)

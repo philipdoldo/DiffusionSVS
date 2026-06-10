@@ -1,5 +1,11 @@
-
 """
+First, we create splits and a phoneme vocabulary using the `build_phoneme_vocab` and `build_splits` functions.
+This script first parses all of the TextGrid files in PopCS to build a phoneme vocabulary which includes special
+tokens. This vocabulary is saved in `DiffSinger/binarized_data/vocab.json`. Additionally, this builds train,
+val, and test splits where the val and test splits are defined in the config. The splits are stored in
+`DiffSinger/binarized_data/splits.json`.
+
+
     When building mel2ph we sometimes encounter TextGrid intervals with emptry-string text fields, e.g. interval 53 in the example below:
 
             intervals [52]:
@@ -26,6 +32,8 @@ import textgrid
 import toml
 import json
 import h5py
+import os
+from datetime import datetime
 from pathlib import Path
 from tqdm import tqdm
 
@@ -33,9 +41,94 @@ SILENCE_TOKEN = "SP"
 BOS_TOKEN = "<BOS>"
 EOS_TOKEN = "<EOS>"
 
-class BinarizationError(Exception): # TODO delete this
-    pass
 
+def build_phoneme_vocab(raw_data_dir: str, save_dir: str) -> dict[str, int]:
+    """
+    `raw_data_dir` is expected to be a directory containing subdirectories which contain TextGrid files, this function
+    iterates through all of these TextGrid files and collects the phonemes from Tier 2 of the TextGrid. 
+
+    Output is a dictionary with string token keys (corresponding to phonemes or special tokens) and integer values. 
+    A .json file of the collected vocabulary is saved in `save_dir`
+
+    Example directory structure:
+
+        popcs                   <-- raw_data_dir (for PopCS dataset)
+            popcs-Bad           <-- example subdirectory
+                0000.TextGrid   <-- first TextGrid file we parse
+                0000.txt       
+                0000_ph.txt
+                0000_wf0.wav
+                0001.TextGrid   <-- second TextGrid file we parse
+                ...
+
+    """
+    special_tokens = ["<PAD>", "<BOS>", "<EOS>", "SP"]
+    raw_data_dir = Path(raw_data_dir)
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    vocab = set() # store phonemes
+    for song_dir in sorted(raw_data_dir.iterdir()):
+        for text_grid_path in sorted(song_dir.glob("*.TextGrid")):
+            text_grid = textgrid.TextGrid.fromFile(str(text_grid_path))
+            tier = text_grid.tiers[1] # we use index 1 because we want the second tier because that it what other people used
+            for interval in tier:
+                phoneme = interval.mark.strip()
+                if len(phoneme) > 0:
+                    vocab.add(phoneme)
+
+    vocab = special_tokens + sorted(vocab)
+    vocab = {token : i for i, token in enumerate(vocab)}
+    save_path = save_dir / "vocab.json"
+    with open(save_path, "w", encoding="utf-8") as f:
+        json.dump(vocab, f, ensure_ascii=False, indent=2)
+
+    print(f"Phoneme vocabulary: {len(vocab)} tokens (including special tokens: {special_tokens})")
+    print(f"Tokens: {vocab}")
+    print(f"Saved to {save_path}")
+
+    return vocab
+
+
+def build_splits(raw_data_dir: str, save_dir: str, val_songs: list[str], test_songs: list[str]) -> dict[str, list[str]]:
+    """
+    Give lists of PopCS song names for the val and test sets, for example in DiffSinger they use
+        test_songs = ["popcs-说散就散", "popcs-隐形的翅膀"]
+        (in DiffSinger they made the val set the same as the test set, looks like it might be unintentional based on this indexing https://github.com/MoonInTheRiver/DiffSinger/blob/ce7789f1427ddcdec647b3ab2bf2d1b12134e51e/data_gen/tts/base_binarizer.py#L65)
+    The lists get saved to a .json file stored in `save_dir`
+    """
+    raw_data_dir = Path(raw_data_dir)
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    test_songs  = set(test_songs)
+    val_songs = set(val_songs)
+
+    splits = {"test": [], "val": [], "train": []}
+
+    for song_dir in sorted(raw_data_dir.iterdir()):
+        song_name = song_dir.name
+        for text_grid_path in sorted(song_dir.glob("*.TextGrid")):
+            item_name = f"{song_dir.name}-{text_grid_path.stem}"
+
+            if song_name in test_songs:
+                splits["test"].append(item_name)
+            elif song_name in val_songs:
+                splits["val"].append(item_name)
+            else:
+                splits["train"].append(item_name)
+
+    save_path = save_dir / "splits.json"
+    with open(save_path, "w", encoding="utf-8") as f:
+        json.dump(splits, f, ensure_ascii=False, indent=2)
+
+    for split, names in splits.items():
+        print(f"{split:>5}: {len(names)} utterances saved in {save_path}")
+
+    return splits
+
+class BinarizationError(Exception):
+    pass
 
 def _is_nondecreasing(arr):
     return np.all(np.diff(arr) >= 0)
@@ -142,6 +235,14 @@ def process_utterance(
     if (not _is_nondecreasing(starts)) or (not _is_nondecreasing(ends)) or (not _is_nondecreasing(mel2ph)) or (mel2ph.max() != len(txt_tokens) - 1):
         raise BinarizationError # skip if the data isn't formatted properly, e.g. `popcs/popcs-爱你十分泪七分/0015.TextGrid` has final xmax of 11.819999999999993 but `/popcs/popcs-爱你十分泪七分/0015_wf0.wav` is only 11.42328798185941 seconds
 
+    max_mel_frames = config["data"].get("max_mel_frames") # truncate to max_mel_frames
+    if max_mel_frames is not None and T > max_mel_frames:
+        log_mel    = log_mel[:, :max_mel_frames]
+        f0         = f0[:max_mel_frames]
+        uv         = uv[:max_mel_frames]
+        mel2ph     = mel2ph[:max_mel_frames]
+        txt_tokens = txt_tokens[:mel2ph[-1] + 1]
+    
     return {
         "mel":        log_mel,    # float32 (n_mels, T)
         "f0":         f0,         # float32 (T,)
@@ -193,12 +294,12 @@ def binarize_split(
     splits_dir = save_dir / "splits"
     splits_dir.mkdir(exist_ok=True)
 
-    lengths = []
-    with h5py.File(save_dir / f"{split}.h5", "r") as f:
-        for item_name in successful:
-            lengths.append(f[item_name]["mel"].shape[0])
+    # lengths = []
+    # with h5py.File(save_dir / f"{split}.h5", "r") as f:
+    #     for item_name in successful:
+    #         lengths.append(f[item_name]["mel"].shape[-1]) # save number of mel frames, maybe useful for length batching but I don't think I need this for now
 
-    np.save(splits_dir / f"{split}_lengths.npy", np.array(lengths, dtype=np.int32))
+    # np.save(splits_dir / f"{split}_lengths.npy", np.array(lengths, dtype=np.int32))
     #json.dump(successful, open(splits_dir / f"{split}_items.json", "w", encoding="utf-8"))
     with open(splits_dir / f"{split}_items.json", "w", encoding="utf-8") as f:
         json.dump(successful, f, ensure_ascii=False, indent=2)
@@ -210,6 +311,41 @@ def binarize_split(
     if skipped:
         print(f"  skipped: {skipped}")
 
+
+def compute_and_save_stats(split: str, save_dir: Path):
+    mel_list = []
+    f0_list  = []
+
+    with h5py.File(save_dir / f"{split}.h5", "r") as f:
+        for item_name in f.keys():
+            mel_list.append(f[item_name]["mel"][:])  # (n_mels, T)
+            f0_list.append(f[item_name]["f0"][:])    # (T,)
+
+    mel_all = np.concatenate(mel_list, axis=1)  # (n_mels, total_T)
+    f0_all  = np.concatenate(f0_list,  axis=0)  # (total_T,)
+
+    np.savez(
+        save_dir / f"{split}_stats.npz",
+        mel_mean   = mel_all.mean(axis=1),
+        mel_std    = mel_all.std(axis=1),
+        mel_min    = mel_all.min(axis=1),
+        mel_max    = mel_all.max(axis=1),
+        mel_median = np.median(mel_all, axis=1),
+        f0_mean    = f0_all.mean(),
+        f0_std     = f0_all.std(),
+        f0_min     = f0_all.min(),
+        f0_max     = f0_all.max(),
+        f0_median  = np.median(f0_all),
+    )
+    print(f"{split}: stats saved to {save_dir / f'{split}_stats.npz'}")
+
+
+def create_data_dir(parent_dir, config_name):
+    timestamp = datetime.now().strftime("%m-%d-%Y-%Hh%Mm%Ss")
+    data_dir = os.path.join(parent_dir, config_name, f"{timestamp}")
+    os.makedirs(data_dir, exist_ok=True)
+    return Path(data_dir)
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -219,11 +355,26 @@ if __name__ == "__main__":
     with open(args.config, "r") as f:
         config = toml.load(f)
 
+    save_dir = create_data_dir(parent_dir=config['data']['save_dir'], config_name=os.path.basename(args.config))
     raw_data_dir = Path(config["data"]["raw_data_dir"])
-    save_dir = Path(config["data"]["save_dir"])
 
-    phoneme_to_idx = json.load(open(save_dir / "vocab.json", encoding="utf-8"))
-    splits = json.load(open(save_dir / "splits.json", encoding="utf-8"))
+    with open(os.path.join(save_dir, "config.toml"), "w") as f:
+        toml.dump(config, f) # save copy of config in binarized data directory
+
+    vocab = build_phoneme_vocab(
+        raw_data_dir=raw_data_dir, 
+        save_dir=save_dir
+        )
+    
+    splits = build_splits(
+        raw_data_dir=raw_data_dir, 
+        save_dir=save_dir, 
+        val_songs=config['data']['val_songs'],
+        test_songs=config['data']['test_songs']
+        )
+
+    # phoneme_to_idx = json.load(open(save_dir / "vocab.json", encoding="utf-8"))
+    # splits = json.load(open(save_dir / "splits.json", encoding="utf-8"))
 
     for split, item_names in splits.items():
         binarize_split(
@@ -231,7 +382,9 @@ if __name__ == "__main__":
             item_names=item_names, 
             raw_data_dir=raw_data_dir, 
             save_dir=save_dir, 
-            phoneme_to_idx=phoneme_to_idx, 
+            phoneme_to_idx=vocab, 
             config=config
             )
 
+    for split in splits.keys():
+        compute_and_save_stats(split=split, save_dir=save_dir)
