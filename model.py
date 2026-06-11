@@ -307,10 +307,7 @@ class MusicScoreEncoder(nn.Module):
         # Typically T >> P. For each mel frame we extract the phoneme embedding corresponding to index stored in mel2ph
         condition = torch.gather(input=phoneme_text_embeddings, dim=1, index=mel2ph_) # (B, T, embedding_dim) -- note: probably want padding token to be index 0 or something to make it a valid index to avoid an error here, can deal with ignoring padding embedding terms later
 
-        ##### BIG TODO TODO TODO TODO TODO!!!!!!!!!!
-        # TODO, do I even want this log stuff here? maybe do this in binarize.py instead? print in DiffSinger what magnitude the values are before and after this step
-        f0_mel = (1 + f0 / 700).log() # (B, T) # TODO, paper says f0 is standardied to mean 0 and unit variance, but idk where this happens
-        pitch_embed = self.pitch_embed(f0_mel[:, :, None]) # (B, T, embedding_dim)
+        pitch_embed = self.pitch_embed(f0[:, :, None]) # (B, T, embedding_dim)
         condition += pitch_embed
 
         return condition # (B, T, embedding_dim)
@@ -359,8 +356,7 @@ class EncoderDecoder(nn.Module):
         return decoder_outputs
 
 ###########################################
-# TODO
-# TODO, log transform of mel spec?? (print from diffsinger script!!) uv is only used during validation? how do they predict k again? need pad collate function, need training loop, loss functions, need to train enc/dec and denoiser separately, handle freezing weights, etc. need vocoder if you're gonna validate sounds produced from test set gen'd spectrograms
+
 class ResidualBlock(nn.Module):
     def __init__(self, embedding_dim=256, dilation=1):
         super().__init__()
