@@ -42,13 +42,15 @@ class SinusoidalPositionalEmbedding(nn.Module):
         self.embedding_dim = embedding_dim
         self.base = base # e.g. 10000
     
-    def forward(self, seq_len: int, device):
+    def forward(self, positions):
+        """
+        `positions` has shape (B,) and is a tensor of (integer) diffusion timesteps
+        """
         half_dim = self.embedding_dim // 2
-        i = torch.arange(half_dim, device=device) # shape (embedding_dim//2)
+        i = torch.arange(half_dim, device=positions.device) # shape (embedding_dim//2)
         freqs = 1/self.base ** (i / (half_dim - 1)) # shape (embedding_dim//2) # e.g. frequencies ranging from 1 down to 1/10000
-        positions = torch.arange(seq_len, device=device) # shape (seq_len)
-        angles = positions[:, None] * freqs[None, :] # shape (seq_len, embedding_dim//2)
-        return torch.cat([angles.sin(), angles.cos()], dim=-1) # shape (seq_len, embedding_dim)
+        angles = positions[:, None] * freqs[None, :] # shape (batch_size, embedding_dim//2)
+        return torch.cat([angles.sin(), angles.cos()], dim=-1) # shape (batch_size, embedding_dim)
 
 def rmsnorm(x):
     """
@@ -130,6 +132,76 @@ class BidirectionalSelfAttention(nn.Module):
         y = F.scaled_dot_product_attention(q, k, v, is_causal=False, attn_mask=attn_mask[:, None, None, :]) # attn mask needs to broadcast with the tensor of attention matrices which has shape (B, num_heads, query_seq_len, key_seq_len), in our case query_seq_len = key_seq_len
         y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, embed_dim)
         return self.Wo(y)
+
+
+# import xformers.ops as xops ##### xformers is slower!
+
+# class BidirectionalSelfAttention(nn.Module):
+
+#     def __init__(self, config):
+#         super().__init__()
+#         self.Wq = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
+#         self.Wk = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
+#         self.Wv = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
+#         self.Wo = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
+
+#         self.num_heads = config['num_attention_heads']
+#         self.embed_dim = config['embedding_dim']
+
+#     def forward(self, x, cos_sin, attn_mask):
+#         """
+#         `x` has shape (batch_size, seq_len, embed_dim)
+#         `attn_mask` has shape (batch_size, seq_len) and is True for entries that should take part in attention and False otherwise
+#         """
+#         batch_size, seq_len, embed_dim = x.shape
+#         q, k, v = self.Wq(x), self.Wk(x), self.Wv(x) # each has shape (batch_size, seq_len, embed_dim)
+
+#         head_dim = embed_dim // self.num_heads
+#         assert self.num_heads * head_dim == embed_dim, f"{self.num_heads=}, {head_dim=}, {embed_dim=}"
+
+#         q = q.view(batch_size, seq_len, self.num_heads, head_dim) # (batch_size, seq_len, num_heads, head_dim)
+#         k = k.view(batch_size, seq_len, self.num_heads, head_dim) # (batch_size, seq_len, num_heads, head_dim)
+#         v = v.view(batch_size, seq_len, self.num_heads, head_dim) # (batch_size, seq_len, num_heads, head_dim)
+
+#         # Apply Rotary Embeddings to queries and keys to get relative positional encoding
+#         cos, sin = cos_sin
+#         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin) # QK rotary embedding
+#         q, k = rmsnorm(q), rmsnorm(k) # QK norm
+
+#         # xFormers expects (batch_size, seq_len, num_heads, head_dim), so unlike PyTorch SDPA we do NOT transpose heads ahead of sequence
+
+#         # # Construct additive attention bias from padding mask
+#         # # attn_bias = torch.zeros(batch_size, seq_len, seq_len, device=x.device, dtype=q.dtype) # (batch_size, query_seq_len, key_seq_len)
+#         # # attn_bias.masked_fill_(torch.logical_not(attn_mask)[:, None, :], float('-inf')) # (batch_size, query_seq_len, key_seq_len)
+#         # attn_bias = torch.zeros(batch_size, self.num_heads, seq_len, seq_len, device=x.device, dtype=q.dtype) # (batch_size, num_heads, query_seq_len, key_seq_len)
+#         # attn_bias.masked_fill_(torch.logical_not(attn_mask)[:, None, None, :], float('-inf')) # (batch_size, 1, 1, key_seq_len), broadcasts over num_heads and query_seq_len
+
+#         #######3
+#         # Construct additive attention bias from padding mask
+#         aligned_seq_len = ((seq_len + 7) // 8) * 8
+
+#         attn_bias = torch.zeros(
+#             batch_size,
+#             self.num_heads,
+#             seq_len,
+#             aligned_seq_len,
+#             device=x.device,
+#             dtype=q.dtype,
+#         )[:, :, :, :seq_len] # (batch_size, num_heads, query_seq_len, key_seq_len)
+
+#         attn_bias.masked_fill_(
+#             torch.logical_not(attn_mask)[:, None, None, :],
+#             float('-inf'),
+#         ) # (batch_size, 1, 1, key_seq_len), broadcasts over num_heads and query_seq_len
+#         #######3
+
+#         #y = xops.memory_efficient_attention(q, k, v, attn_bias=attn_bias) # attn bias needs to broadcast with shape (batch_size, query_seq_len, key_seq_len, num_heads), in our case query_seq_len = key_seq_len
+#         y = xops.memory_efficient_attention(q, k, v, attn_bias=attn_bias) # attn bias has shape (batch_size, num_heads, query_seq_len, key_seq_len), in our case query_seq_len = key_seq_len
+
+#         y = y.contiguous().view(batch_size, seq_len, embed_dim)
+#         return self.Wo(y)
+
+
 
 class MLP(nn.Module):
 
@@ -235,6 +307,7 @@ class MusicScoreEncoder(nn.Module):
         # Typically T >> P. For each mel frame we extract the phoneme embedding corresponding to index stored in mel2ph
         condition = torch.gather(input=phoneme_text_embeddings, dim=1, index=mel2ph_) # (B, T, embedding_dim) -- note: probably want padding token to be index 0 or something to make it a valid index to avoid an error here, can deal with ignoring padding embedding terms later
 
+        ##### BIG TODO TODO TODO TODO TODO!!!!!!!!!!
         # TODO, do I even want this log stuff here? maybe do this in binarize.py instead? print in DiffSinger what magnitude the values are before and after this step
         f0_mel = (1 + f0 / 700).log() # (B, T) # TODO, paper says f0 is standardied to mean 0 and unit variance, but idk where this happens
         pitch_embed = self.pitch_embed(f0_mel[:, :, None]) # (B, T, embedding_dim)
@@ -300,7 +373,7 @@ class ResidualBlock(nn.Module):
     def forward(self, x, cond, time_emb):
         """
         `x` has shape (B, d, T)
-        `cond` has shape (B, d, T) and is the output from the music score encoder
+        `cond` has shape (B, d, T) and is the output from the music score encoder (with the last 2 dimensions transposed)
         `time_emb` has shape (B, d) and is a batch of diffusion time steps
         """
         time_emb = self.time_emb_projection(time_emb).unsqueeze(-1) # (B, d, 1)
@@ -336,7 +409,6 @@ class WaveNet(nn.Module):
         self.residual_layers = nn.ModuleList([
             ResidualBlock(
                 embedding_dim=config['embedding_dim'],
-                residual_channels=config['embedding_dim'],
                 dilation=2**(i % config['dilation_cycle_length'])
             )
             for i in range(config['num_wavenet_layers'])
@@ -358,13 +430,13 @@ class WaveNet(nn.Module):
         B, M, T = mel.shape 
         if M != self.num_mel_bins:
             raise ValueError(f"{mel.shape=}, {self.num_mel_bins=}")
-        if cond.shape[-1] != T:
+        if cond.shape[1] != T:
             raise ValueError(f"{cond.shape=}, {T=}")
-        cond.transpose(-2, -1) # (B, d, T)
+        cond = cond.transpose(-2, -1) # (B, d, T)
         x = self.input_projection(mel)  # (B, d, T)
 
         x = F.relu(x) # (B, d, T)
-        time_emb = self.time_embedding(t) # (B, d)
+        time_emb = self.time_embedding(positions=t) # (B, d)
         time_emb = self.mlp(time_emb) # (B, d)
         skip_connections = []
         for layer in self.residual_layers:

@@ -18,6 +18,8 @@ def pad_and_norm_collate_fn(batch, padding_value, stats=None):
 
     # (M, T) tensors -- transpose to (T, M), pad to (B, T_max, M), transpose back -- pad_sequence always pads along dimension 0
     mel        = pad_sequence([m.T for m in batch["mel"]], batch_first=True, padding_value=padding_value).permute(0, 2, 1) # (B, M, T_max)
+    if "epsilon" in batch:
+        epsilon    = pad_sequence([m.T for m in batch["epsilon"]], batch_first=True, padding_value=padding_value).permute(0, 2, 1) # (B, M, T_max)
 
     # (P,) tensors -- pad along P to (B, P_max)
     txt_tokens = pad_sequence(batch["txt_tokens"], batch_first=True, padding_value=padding_value) # (B, P_max)
@@ -48,6 +50,8 @@ def pad_and_norm_collate_fn(batch, padding_value, stats=None):
         'mel_padding_mask' : mel_mask,
         'ph_padding_mask' : txt_mask,
     }
+    if "epsilon" in batch:
+        collated_batch['epsilon'] = epsilon
     for k, v in collated_batch.items(): # do this in case there are other keys that we don't want to process in the collate function that we don't want to lose
         batch[k] = v
     return batch
@@ -126,6 +130,7 @@ class NaiveDataLoader:
             'mel2ph' : [],
             'uv' : [],
             'txt_tokens' : [],
+            'epsilon' : [],
         }
 
         with h5py.File(self.data_path, "r") as f:
@@ -141,15 +146,17 @@ class NaiveDataLoader:
                 batch['mel2ph'].append(_mel2ph)
                 batch['uv'].append(_uv)
                 batch['txt_tokens'].append(_txt_tokens)
+                if self.diffusion_k is not None:
+                    batch['epsilon'].append(torch.randn_like(_mel))
 
         self.current_position += self.batch_size * self.world_size
         if self.current_position + self.batch_size * self.world_size >= len(self.utterances):
             self.reset()
 
         if self.diffusion_k is not None:
-            epsilon = torch.randn_like(_mel)
-            t = torch.randint(1, self.diffusion_k+1, shape=(self.batch_size,)) # random integer in {1, ..., k}
-            batch['epsilon'] = epsilon
+            #epsilon = torch.randn_like(_mel)
+            t = torch.randint(1, self.diffusion_k+1, size=(self.batch_size,)) # random integer in {1, ..., k}
+            #batch['epsilon'] = epsilon
             batch['t'] = t
 
         collated_batch = self.collate_fn(batch, padding_value=self.padding_value, stats=self.stats) # TODO add f0_stats and mel_stats args

@@ -24,7 +24,7 @@ TODO:
 """
 
 class DiffusionProcess:
-    def __init__(self, beta_min: float=1e-4, beta_max: float=0.06, T: int=100):
+    def __init__(self, beta_min: float=1e-4, beta_max: float=0.06, T: int=100, device=None):
         """
         See Implementation Details in Section 4.1 https://arxiv.org/abs/2105.02446 which motivates the default values
         Note: with defaults we have (1 - diffusion.alpha_bar(100))**(0.5) = 0.9764 for the full noise weight in the interpolant
@@ -32,6 +32,7 @@ class DiffusionProcess:
         self.beta_min = beta_min # beta_1 -- t=1 should be (approximately) pure data
         self.beta_max = beta_max # beta_T -- t=T shouldbe pure noise (not sure why they use 0.06, it makes alpha_bar close enough I guess?)
         self.T = T # the maximum diffusion time step
+        self.device = device
         self.precompute_alpha_bars() # precompute all of the alpha_bar values, see docstrings in `alpha_bar` and `precompute_alpha_bars` methods
 
     def beta(self, t):
@@ -65,6 +66,7 @@ class DiffusionProcess:
         timesteps = torch.arange(1, self.T+1) # shape (T,) -- timesteps {1, ..., T}
         alphas = self.alpha(timesteps) # shape (T,)
         self.alpha_bars = torch.cumprod(alphas, dim=0) # shape (T,)
+        self.alpha_bars = self.alpha_bars.to(self.device)
 
     def get_interpolant(self, mel, epsilon, t):
         """
@@ -75,7 +77,7 @@ class DiffusionProcess:
         see Algorithm 1 in the DiffSinger paper https://arxiv.org/abs/2105.02446
         """
         alpha_bar = self.alpha_bar(t)[:, None, None] # shape (B, 1, 1) so it broadcasts on the next line
-        interpolant = math.sqrt(alpha_bar) * mel + math.sqrt(1 - alpha_bar) * epsilon # shape (B, M, T)
+        interpolant = torch.sqrt(alpha_bar) * mel + torch.sqrt(1 - alpha_bar) * epsilon # shape (B, M, T)
         return interpolant # this is the "noisy" mel-spectrogram that we input into the denoiser
 
 
@@ -120,9 +122,6 @@ def freeze(model):
 
 if __name__ == "__main__":
 
-    diffusion = DiffusionProcess()
-    import code; code.interact(local=locals())
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help=".toml file")
     args = parser.parse_args()
@@ -161,9 +160,19 @@ if __name__ == "__main__":
     model_config = config["model"]
     if model_config["model_type"] == "EncoderDecoder": # Phase 1 of training
         model = EncoderDecoder(model_config)
+        diffusion_k = None
     elif model_config["model_type"] == "WaveNetDenoiser": # Phase 2 of training
         model = WaveNetDenoiser(model_config)
+        encoder_checkpoint_path = config['model'].get('encoder_checkpoint')
+        if encoder_checkpoint_path is not None:
+            encoder_checkpoint = torch.load(encoder_checkpoint_path, map_location="cpu") # actually checkpoint for EncoderDecoder model...
+            encoder_decoder = EncoderDecoder(model_config)
+            encoder_decoder.load_state_dict(encoder_checkpoint["model"])
+            model.encoder = encoder_decoder.encoder
+            print0(f"ENCODER LOADED WITH CHECKPOINT {encoder_checkpoint_path}\n")
         freeze(model.encoder)
+        diffusion_k = config['training']['diffusion']['k']
+        print0("ahhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh")
     else:
         raise ValueError(f"{model_config['model_type']=}")
 
@@ -234,7 +243,7 @@ if __name__ == "__main__":
     num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     write0(f"Model Parameters: {num_params:,}\nTrainable Model Parameters: {num_trainable_params:,}\n", log_file=log_file)
 
-    train_loader = NaiveDataLoader(data_path=config["training"]["train_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"], stats_path=config["training"]["train_data_stats_path"])
+    train_loader = NaiveDataLoader(data_path=config["training"]["train_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"], diffusion_k=diffusion_k, stats_path=config["training"]["train_data_stats_path"])
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -269,7 +278,8 @@ if __name__ == "__main__":
         diffusion = DiffusionProcess(
             beta_min=config['training']['diffusion']['beta_min'], 
             beta_max=config['training']['diffusion']['beta_max'], 
-            T=config['training']['diffusion']['T']
+            T=config['training']['diffusion']['T'],
+            device=device
             )
         
     # TRAINING LOOP
@@ -301,7 +311,7 @@ if __name__ == "__main__":
                 
                 t0 = time.time()
                 rng_state = torch.get_rng_state() # val might change rng state on rank 0, so save and restore it just in case, probably not very important
-                val_loader = NaiveDataLoader(data_path=config["training"]["val_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], stats_path=config["training"]["train_data_stats_path"]) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
+                val_loader = NaiveDataLoader(data_path=config["training"]["val_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], diffusion_k=diffusion_k, stats_path=config["training"]["train_data_stats_path"]) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
                 val_loader.reset() # should be unnecessary
 
                 ema.store(model.parameters()) # store copy of the actual model weights
