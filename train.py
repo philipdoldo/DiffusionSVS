@@ -173,10 +173,10 @@ if __name__ == "__main__":
         # I didn't bother storing rng state of each rank because I might resume with a different number of gpus anyway and it is simpler this way
         # The checkpoint stores a set of all rng seeds used across all training runs to be sure we never repeat any of them (the gpus I'm using can have a lot of issues)
         if config["training"]["rng_seed"] in checkpoint["rng_seeds"]:
-            raise ValueError(f"Change the rng seed in the config before you resume training! {checkpoint['rng_seeds']=}, {config["training"]['rng_seed']=}")
+            raise ValueError(f"Change the rng seed in the config before you resume training! {checkpoint['rng_seeds']=}, {config['training']['rng_seed']=}")
 
         model.load_state_dict(checkpoint["model"])
-        print0(f"MODEL LOADED WITH CHECKPOINT {config["training"]['checkpoint_path']}\n")
+        print0(f"MODEL LOADED WITH CHECKPOINT {config['training']['checkpoint_path']}\n")
     prior_rng_seeds = checkpoint["rng_seeds"] if config["training"].get("resume_training", False) else set() # to be stored in checkpoint to be sure we don't accidentally resume training with a previously used rng seed
     prior_rng_seeds.add(config["training"]["rng_seed"])
 
@@ -260,7 +260,7 @@ if __name__ == "__main__":
 
         initial_step = checkpoint["step"]
 
-        write0(f"RESUMING TRAINING WITH CHECKPOINT {config["training"]['checkpoint_path']} AT STEP {initial_step}\n", log_file=log_file)
+        write0(f"RESUMING TRAINING WITH CHECKPOINT {config['training']['checkpoint_path']} AT STEP {initial_step}\n", log_file=log_file)
     else:
         initial_step = 0 # if not resuming training, have training loop start at step 0
 
