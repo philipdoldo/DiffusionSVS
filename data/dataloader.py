@@ -130,8 +130,10 @@ class NaiveDataLoader:
             'mel2ph' : [],
             'uv' : [],
             'txt_tokens' : [],
-            'epsilon' : [],
         }
+
+        if self.diffusion_k is not None:
+            batch['epsilon'] = []
 
         with h5py.File(self.data_path, "r") as f:
             for utterance in utterances:
