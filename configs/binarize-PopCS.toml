@@ -5,10 +5,10 @@ sample_rate = 24000
 hop_size = 128
 window_size = 512
 n_mels = 80
-min_freq = 40.0 # Hz
-max_freq = 12000.0 # Hz
+min_freq = 30 # Hz
+max_freq = 12000 # Hz
 mel_center = true # default in librosa
-mel_log_clip = 1e-5
+mel_log_clip = 1e-6
 
 [f0]
 extractor = "parselmouth"   # "parselmouth" | "harvest"

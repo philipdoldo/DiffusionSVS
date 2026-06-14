@@ -159,19 +159,39 @@ def process_utterance(
     # ------------------------------------------------------------------
     # 2. mel spectrogram
     # ------------------------------------------------------------------
-    mel = librosa.feature.melspectrogram(
-        y=audio,
-        sr=audio_config["sample_rate"],
+    x_stft = librosa.stft(
+        audio,
         n_fft=audio_config["window_size"],
         hop_length=audio_config["hop_size"],
         win_length=audio_config["window_size"],
+        window="hann",
+        pad_mode="constant",
+    )
+    spc = np.abs(x_stft)  # amplitude spectrogram (n_bins, T)
+
+    mel_basis = librosa.filters.mel(
+        sr=audio_config["sample_rate"],
+        n_fft=audio_config["window_size"],
         n_mels=audio_config["n_mels"],
         fmin=audio_config["min_freq"],
         fmax=audio_config["max_freq"],
-        center=audio_config["mel_center"],
     )
-    log_mel = np.log(np.clip(mel, a_min=audio_config["mel_log_clip"], a_max=None)) # (n_mels, T)
-    log_mel = log_mel.astype(np.float32)  # (n_mels, T)
+    mel = mel_basis @ spc  # (n_mels, T)
+    log_mel = np.log10(np.maximum(audio_config["mel_log_clip"], mel)).astype(np.float32)  # (n_mels, T)
+
+    # mel = librosa.feature.melspectrogram(
+    #     y=audio,
+    #     sr=audio_config["sample_rate"],
+    #     n_fft=audio_config["window_size"],
+    #     hop_length=audio_config["hop_size"],
+    #     win_length=audio_config["window_size"],
+    #     n_mels=audio_config["n_mels"],
+    #     fmin=audio_config["min_freq"],
+    #     fmax=audio_config["max_freq"],
+    #     center=audio_config["mel_center"],
+    # )
+    # log_mel = np.log(np.clip(mel, a_min=audio_config["mel_log_clip"], a_max=None)) # (n_mels, T)
+    # log_mel = log_mel.astype(np.float32)  # (n_mels, T)
     T = log_mel.shape[1]
 
     # ------------------------------------------------------------------
