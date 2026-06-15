@@ -151,8 +151,8 @@ if __name__ == "__main__":
     # Learning Rate Schedule (Cosine Decay -- warmup + constant if you let min_lr = max_lr and cosine_decay_steps=0)
     warmup_steps = config["training"].get("warmup_steps") # should only be None if `use_step_decay` is True
     max_lr = config["training"].get("max_lr") # should only be None if `use_step_decay` is True
-    min_lr = config["training"].get("min_lr", max_lr/10)
-    lr_decay_steps = config["training"].get("cosine_decay_steps", training_steps - warmup_steps)
+    min_lr = config["training"].get("min_lr", None if max_lr is None else max_lr/10)
+    lr_decay_steps = config["training"].get("cosine_decay_steps", None if warmup_steps is None else training_steps - warmup_steps)
     use_step_decay = config["training"].get("use_step_decay", False)
     def get_lr(it):
         if not use_step_decay:
@@ -193,7 +193,6 @@ if __name__ == "__main__":
             print0(f"ENCODER LOADED WITH CHECKPOINT {encoder_checkpoint_path}\n")
         freeze(model.encoder)
         diffusion_k = config['training']['diffusion']['k']
-        print0("ahhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh")
     else:
         raise ValueError(f"{model_config['model_type']=}")
 

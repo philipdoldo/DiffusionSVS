@@ -34,7 +34,7 @@ l1_weight = 1
 
 [model]
 model_type = "WaveNetDenoiser"
-encoder_checkpoint = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/experiments/_train-encoder-decoder/06-10-2026-22h12m38s/checkpoints/checkpoint_step159999.pt"
+encoder_checkpoint = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/experiments/_train-encoder-decoder/06-15-2026-02h42m29s/checkpoints/checkpoint_step159999.pt"
 
 pad_token_id = 0 # maybe add a sanity check in training code that it matches with the vocab.json from the dataset that you end up loading
 vocab_size = 60
