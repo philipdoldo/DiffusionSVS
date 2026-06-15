@@ -1,5 +1,6 @@
 import argparse
 import toml
+import json
 import time
 import os
 from datetime import datetime
@@ -138,24 +139,44 @@ if __name__ == "__main__":
     checkpoint_interval = config["training"]["checkpoint_interval"]
 
     save_dir = config["training"]["save_dir"]
+    data_dir = config["training"]["data_dir"]
+    train_data_path = os.path.join(data_dir, "train.h5")
+    val_data_path = os.path.join(data_dir, "val.h5")
+    train_data_stats_path = os.path.join(data_dir, "train_stats.npz")
+    phoneme_vocab_path = os.path.join(data_dir, "vocab.josn") 
+    vocab =  json.load(open(phoneme_vocab_path, encoding="utf-8")) # load phoneme vocabulary to sanity check padding token matches config
+    if config["model"]["pad_token_id"] != vocab["<PAD>"]:
+        raise ValueError(f"Padding token id in {phoneme_vocab_path} does not match the one in {args.config}. {config['model']['pad_token_id']=}, {vocab['<PAD>']=}")
 
     # Learning Rate Schedule (Cosine Decay -- warmup + constant if you let min_lr = max_lr and cosine_decay_steps=0)
-    warmup_steps = config["training"]["warmup_steps"]
-    max_lr = config["training"]["max_lr"]
+    warmup_steps = config["training"].get("warmup_steps") # should only be None if `use_step_decay` is True
+    max_lr = config["training"].get("max_lr") # should only be None if `use_step_decay` is True
     min_lr = config["training"].get("min_lr", max_lr/10)
     lr_decay_steps = config["training"].get("cosine_decay_steps", training_steps - warmup_steps)
+    use_step_decay = config["training"].get("use_step_decay", False)
     def get_lr(it):
-        # 1) linear warmup for warmup_steps steps
-        if it < warmup_steps:
-            return max_lr * (it + 1) / (warmup_steps + 1)
-        # 2) if it > lr_decay_steps, return min learning rate
-        if it > lr_decay_steps:
-            return min_lr
-        # 3) in between, use cosine decay down to min learning rate
-        decay_ratio = (it - warmup_steps) / (lr_decay_steps - warmup_steps)
-        assert 0 <= decay_ratio <= 1
-        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
-        return min_lr + coeff * (max_lr - min_lr)
+        if not use_step_decay:
+            # 1) linear warmup for warmup_steps steps
+            if it < warmup_steps:
+                return max_lr * (it + 1) / (warmup_steps + 1)
+            # 2) if it > lr_decay_steps, return min learning rate
+            if it > lr_decay_steps:
+                return min_lr
+            # 3) in between, use cosine decay down to min learning rate
+            decay_ratio = (it - warmup_steps) / (lr_decay_steps - warmup_steps)
+            assert 0 <= decay_ratio <= 1
+            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+            return min_lr + coeff * (max_lr - min_lr)
+        else:
+            # hardcoding what DiffSinger uses as default for training their denoiser, just for replication purposes. I am basing this off of the lr plot from training DiffSinger with their code
+            if it < 50000:
+                return 1e-3
+            elif it < 100000:
+                return 5e-4
+            elif it < 150000:
+                return 2.5e-4
+            else:
+                return 1.25e-4
 
     model_config = config["model"]
     if model_config["model_type"] == "EncoderDecoder": # Phase 1 of training
@@ -243,7 +264,7 @@ if __name__ == "__main__":
     num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     write0(f"Model Parameters: {num_params:,}\nTrainable Model Parameters: {num_trainable_params:,}\n", log_file=log_file)
 
-    train_loader = NaiveDataLoader(data_path=config["training"]["train_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"], diffusion_k=diffusion_k, stats_path=config["training"]["train_data_stats_path"])
+    train_loader = NaiveDataLoader(data_path=train_data_path, batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"], diffusion_k=diffusion_k, stats_path=train_data_stats_path)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -311,7 +332,7 @@ if __name__ == "__main__":
                 
                 t0 = time.time()
                 rng_state = torch.get_rng_state() # val might change rng state on rank 0, so save and restore it just in case, probably not very important
-                val_loader = NaiveDataLoader(data_path=config["training"]["val_data_path"], batch_size=batch_size, padding_value=config["model"]["pad_token_id"], diffusion_k=diffusion_k, stats_path=config["training"]["train_data_stats_path"]) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
+                val_loader = NaiveDataLoader(data_path=val_data_path, batch_size=batch_size, padding_value=config["model"]["pad_token_id"], diffusion_k=diffusion_k, stats_path=train_data_stats_path) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
                 val_loader.reset() # should be unnecessary
 
                 ema.store(model.parameters()) # store copy of the actual model weights
@@ -336,6 +357,7 @@ if __name__ == "__main__":
                             mel=val_interpolant, 
                             t=val_batch['t']
                             )
+                        val_loss = loss_function(ground_truth_mel=val_batch['epsilon'], output_mel=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
                     elif config['model']['model_type'] == "EncoderDecoder":
                         val_model_output = model(
                             txt_tokens=val_batch['txt_tokens'],
@@ -345,10 +367,11 @@ if __name__ == "__main__":
                             ph_padding_mask=val_batch['ph_padding_mask'],
                             mel_padding_mask=val_batch['mel_padding_mask']
                             )
+                        val_loss = loss_function(ground_truth_mel=val_ground_truth_mel, output_mel=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
                     else:
                         raise ValueError(f"{config['model']['model_type']=}")
 
-                    val_loss = loss_function(ground_truth_mel=val_ground_truth_mel, output_mel=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
+                    #val_loss = loss_function(ground_truth_mel=val_ground_truth_mel, output_mel=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
                     val_losses.append(val_loss)
                 val_loss = sum(val_losses) / len(val_losses)
                 ema.restore(model.parameters()) # copy stored model weights back into the model
@@ -386,6 +409,7 @@ if __name__ == "__main__":
                     mel=interpolant, 
                     t=batch['t']
                     )
+                loss = loss_function(ground_truth_mel=batch['epsilon'], output_mel=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
             elif config['model']['model_type'] == "EncoderDecoder":
                 model_output = model(
                     txt_tokens=batch['txt_tokens'],
@@ -395,10 +419,11 @@ if __name__ == "__main__":
                     ph_padding_mask=batch['ph_padding_mask'],
                     mel_padding_mask=batch['mel_padding_mask']
                     )
+                loss = loss_function(ground_truth_mel=ground_truth_mel, output_mel=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
             else:
                 raise ValueError(f"{config['model']['model_type']=}")
 
-            loss = loss_function(ground_truth_mel=ground_truth_mel, output_mel=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
+            #loss = loss_function(ground_truth_mel=ground_truth_mel, output_mel=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps # uhh, surely this was a typo?? I need the target to be different during diffusion
             train_loss += loss.detach() # for logging
             loss.backward()
 

@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 def get_loss_function(config):
     weights = {
@@ -50,5 +51,42 @@ def L1_loss(ground_truth_mel, output_mel, mel_padding_mask):
 
 # TODO, define ssim loss because they use linear combination of l1 and ssim, see https://github.com/MoonInTheRiver/DiffSinger/blob/ce7789f1427ddcdec647b3ab2bf2d1b12134e51e/modules/commons/ssim.py#L354
 
-def ssim_loss(ground_truth_mel, output_mel, mel_padding_mask):
-    return None # TODO -- be sure to account for padding properly
+def ssim_loss(ground_truth_mel, output_mel, mel_padding_mask, bias=6.0):
+    """
+    `ground_truth_mel` is the ground-truth mel-spectrogram and `output_mel` is the mel-spectrogram output from the model.
+        Both have shape (B, M, T)
+    `mel_padding_mask` is True when mel-frames correspond to padding.
+        shape (B, T)
+    
+        TODO check correctness of this function
+    """
+    mask = torch.logical_not(mel_padding_mask)
+
+    # treat mel as a 1-channel 2D image: [B, 1, T, n_mel]
+    x = output_mel[:, None] + bias
+    y = ground_truth_mel[:, None] + bias
+
+    # build 11x11 isotropic Gaussian window, shape [1, 1, 11, 11]
+    coords = torch.arange(11, dtype=torch.float32, device=x.device) - 5
+    g = torch.exp(-coords ** 2 / (2 * 1.5 ** 2))
+    g = g / g.sum()
+    window = (g[:, None] * g[None, :]).unsqueeze(0).unsqueeze(0)  # [1, 1, 11, 11]
+
+    def local_stats(a, b):
+        mu_a  = F.conv2d(a, window, padding=5)
+        mu_b  = F.conv2d(b, window, padding=5)
+        var_a = F.conv2d(a * a, window, padding=5) - mu_a ** 2
+        var_b = F.conv2d(b * b, window, padding=5) - mu_b ** 2
+        cov   = F.conv2d(a * b, window, padding=5) - mu_a * mu_b
+        return mu_a, mu_b, var_a, var_b, cov
+
+    mu_x, mu_y, var_x, var_y, cov_xy = local_stats(x, y)
+
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    ssim_map = (2 * mu_x * mu_y + C1) * (2 * cov_xy + C2) / ((mu_x**2 + mu_y**2 + C1) * (var_x + var_y + C2))  # [B, 1, T, n_mel]
+
+    ssim_map = ssim_map.squeeze(1)        # [B, T, n_mel]
+    loss_map = 1 - ssim_map               # 0 = identical, 2 = maximally different
+
+    loss_map = loss_map * mask.unsqueeze(-1)
+    return loss_map.sum() / mask.sum()
