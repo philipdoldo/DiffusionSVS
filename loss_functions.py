@@ -60,11 +60,11 @@ def ssim_loss(ground_truth_mel, output_mel, mel_padding_mask, bias=6.0):
     
         TODO check correctness of this function
     """
-    mask = torch.logical_not(mel_padding_mask)
+    mask = torch.logical_not(mel_padding_mask) # (B, T)
 
-    # treat mel as a 1-channel 2D image: [B, 1, T, n_mel]
-    x = output_mel[:, None] + bias
-    y = ground_truth_mel[:, None] + bias
+    # treat mel as a 1-channel 2D image: [B, 1, T, M]
+    x = output_mel[:, None, :, :] + bias
+    y = ground_truth_mel[:, None, :, :] + bias
 
     # build 11x11 isotropic Gaussian window, shape [1, 1, 11, 11]
     coords = torch.arange(11, dtype=torch.float32, device=x.device) - 5
@@ -83,10 +83,10 @@ def ssim_loss(ground_truth_mel, output_mel, mel_padding_mask, bias=6.0):
     mu_x, mu_y, var_x, var_y, cov_xy = local_stats(x, y)
 
     C1, C2 = 0.01 ** 2, 0.03 ** 2
-    ssim_map = (2 * mu_x * mu_y + C1) * (2 * cov_xy + C2) / ((mu_x**2 + mu_y**2 + C1) * (var_x + var_y + C2))  # [B, 1, T, n_mel]
+    ssim_map = (2 * mu_x * mu_y + C1) * (2 * cov_xy + C2) / ((mu_x**2 + mu_y**2 + C1) * (var_x + var_y + C2))  # [B, 1, T, M]
 
-    ssim_map = ssim_map.squeeze(1)        # [B, T, n_mel]
+    ssim_map = ssim_map.squeeze(1)        # [B, T, M]
     loss_map = 1 - ssim_map               # 0 = identical, 2 = maximally different
 
-    loss_map = loss_map * mask.unsqueeze(-1)
+    loss_map = loss_map * mask[:, None, :] # (B, M, T) * (B, 1, T) -- broadcasts over M
     return loss_map.sum() / mask.sum()

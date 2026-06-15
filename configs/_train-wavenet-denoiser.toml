@@ -1,9 +1,6 @@
 
 [training]
-data_dir = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-10-2026-20h22m59s/"
-# train_data_path = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-10-2026-20h22m59s/train.h5"
-# train_data_stats_path = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-10-2026-20h22m59s/train_stats.npz"
-# val_data_path = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-10-2026-20h22m59s/val.h5"
+data_dir = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s"
 rng_seed = 21
 batch_size = 3
 effective_batch_size = 48

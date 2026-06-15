@@ -1,8 +1,6 @@
 
 [training]
-train_data_path = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-10-2026-20h22m59s/train.h5"
-train_data_stats_path = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-10-2026-20h22m59s/train_stats.npz"
-val_data_path = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-10-2026-20h22m59s/val.h5"
+data_dir = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s"
 rng_seed = 21
 batch_size = 3
 effective_batch_size = 48 #64
@@ -32,8 +30,8 @@ T = 100
 k = 100 # the intersection point used in Algorithm 1 of DiffSinger, could use e.g. k=40 or try predicting k
 
 [training.loss]
-l1_weight = 0.5
-ssim_weight = 0.5
+l1_weight = 1#0.5
+ssim_weight = 0#0.5
 
 [model]
 model_type = "EncoderDecoder"

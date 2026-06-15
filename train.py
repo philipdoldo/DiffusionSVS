@@ -143,7 +143,7 @@ if __name__ == "__main__":
     train_data_path = os.path.join(data_dir, "train.h5")
     val_data_path = os.path.join(data_dir, "val.h5")
     train_data_stats_path = os.path.join(data_dir, "train_stats.npz")
-    phoneme_vocab_path = os.path.join(data_dir, "vocab.josn") 
+    phoneme_vocab_path = os.path.join(data_dir, "vocab.json") 
     vocab =  json.load(open(phoneme_vocab_path, encoding="utf-8")) # load phoneme vocabulary to sanity check padding token matches config
     if config["model"]["pad_token_id"] != vocab["<PAD>"]:
         raise ValueError(f"Padding token id in {phoneme_vocab_path} does not match the one in {args.config}. {config['model']['pad_token_id']=}, {vocab['<PAD>']=}")
