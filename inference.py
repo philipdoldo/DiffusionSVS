@@ -30,14 +30,14 @@ if __name__ == "__main__":
     vocoder.remove_weight_norm()
     vocoder.eval().to(device)
 
-    denoiser_checkpoint_path = ""
+    denoiser_checkpoint_path = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/experiments/_train-wavenet-denoiser/06-15-2026-16h33m52s/checkpoints/checkpoint_step159999.pt"
     denoiser_checkpoint = torch.load(denoiser_checkpoint_path, map_location=device)
-    denoiser_config_path = ""
+    denoiser_config_path = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/experiments/_train-wavenet-denoiser/06-15-2026-16h33m52s/config.toml"
     with open(denoiser_config_path, "r") as f:
         denoiser_config = toml.load(f)
     denoiser = WaveNetDenoiser(denoiser_config['model'])
 
-    train_stats_path = "/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/train_stats.npz"
+    train_stats_path = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s/train_stats.npz"
     stats = np.load(train_stats_path)
     test_loader = NaiveDataLoader(data_path=TEST_H5, batch_size=1, padding_value=0, rng_seed=21, diffusion_k=100, stats_path=train_stats_path)
 
