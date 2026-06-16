@@ -80,7 +80,64 @@ class DiffusionProcess:
         alpha_bar = self.alpha_bar(t)[:, None, None] # shape (B, 1, 1) so it broadcasts on the next line
         interpolant = torch.sqrt(alpha_bar) * mel + torch.sqrt(1 - alpha_bar) * epsilon # shape (B, M, T)
         return interpolant # this is the "noisy" mel-spectrogram that we input into the denoiser
+    
+    def sigma(self, t):
+        """
+        `t` has shape (B,) where B is the batch size
 
+        Right before Section 3 of the DiffSinger paper, they define 
+            \tilde{beta}_t := [(1 - alpha_bar(t-1))/(1 - alpha_bar(t))] * beta(t) 
+        and they set sigma_t^2 equal to it. This function computes sigma_t, which is the square root of \tilde{beta}_t. 
+        """
+        beta_tilde_t = ((1 - self.alpha_bar(t-1)) / (1 - self.alpha_bar(t))) * self.beta(t)
+        return torch.sqrt(beta_tilde_t) # (B,)
+    
+    def sample(self, model, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, M=80):
+        """
+        `model` is the denoiser, e.g. a WaveNetDenoiser class object
+        
+        `txt_tokens` has shape (B, P)  --  where B is batch size and P is the number of phonemes in the sequence
+            contains sequences of phoneme token ids (corresponding to the phonemes used in an audio file)
+        `mel2ph` has shape (B, T)  --  where T is the number of mel frames (when constructing the mel-spectrogram, time was discretized into T mel frames)
+            `mel2ph` on a given mel frame contains the `txt_token` index corresponding to the phoneme used on in the audio, it is important to note that
+            this is not the token id but the index into `txt_tokens`, this will allow for the same token id to potentially receive different positional
+            information if the same token is used multiple times in `txt_tokens`
+        `f0` has shape (B, T)
+            contains the fundamental frequency during each mel frame (interpolation was used to smooth across unvoiced segments, see data preprocessing/binarization code)
+        `uv` has shape (B, T) -- unused
+            boolean mask which is True when the audio was unvoiced, corresponds to where the preinterpolated f0 was zero. False otherwise.
+        `ph_padding_mask` has shape (B, P) and is True for padding values, False otherwise
+        `mel_padding_mask` has shape (B, T) and is True if the mel frame index (for a given batch index) corresponds to a padding value, False otherwise
+        `M` is an integer which represents in the number of mel bins of the mel-spectrogram that we want to generate
+
+        This function does naive sampling used in DiffSinger (i.e. NOT the shallow diffusion approach that they also use in their paper)
+
+        # TODO be careful with padding masks, just try batch size of 1 for now
+        """
+        with torch.no_grad():
+            model.eval()
+            M_t = torch.randn((B, M, T))
+            B, T = mel_padding_mask.shape # do not confuse T (number of mel frames) with self.T (total diffusion time steps)
+            model.eval()
+            for i in range(self.T, 0, -1):
+                t = torch.ones(B) * i # shape (B,)
+
+                model_output = model(
+                    txt_tokens=txt_tokens, 
+                    mel2ph=mel2ph,
+                    f0=f0,
+                    uv=uv, 
+                    ph_padding_mask=ph_padding_mask, 
+                    mel_padding_mask=mel_padding_mask,
+                    mel=M_t, 
+                    t=t
+                    )
+
+                z = torch.randn((B, M, T))
+                alpha_t = self.alpha(t)
+                M_t = (1/torch.sqrt(alpha_t)) * (M_t - ((1 - alpha_t)/torch.sqrt(1 - self.alpha_bar(t)))*model_output ) + self.sigma(t) * z
+        return M_t # generated mel-spectrogram
+    
 
 def print0(s="", **kwargs):
     rank = int(os.environ.get('RANK', 0))
