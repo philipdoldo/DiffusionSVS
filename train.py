@@ -116,11 +116,11 @@ class DiffusionProcess:
         """
         with torch.no_grad():
             model.eval()
-            M_t = torch.randn((B, M, T))
             B, T = mel_padding_mask.shape # do not confuse T (number of mel frames) with self.T (total diffusion time steps)
+            M_t = torch.randn((B, M, T), device=self.device)
             model.eval()
             for i in range(self.T, 0, -1):
-                t = torch.ones(B) * i # shape (B,)
+                t = torch.ones(B, dtype=torch.long, device=self.device) * i # shape (B,)
 
                 model_output = model(
                     txt_tokens=txt_tokens, 
@@ -133,7 +133,7 @@ class DiffusionProcess:
                     t=t
                     )
 
-                z = torch.randn((B, M, T))
+                z = torch.randn((B, M, T), device=self.device)
                 alpha_t = self.alpha(t)
                 M_t = (1/torch.sqrt(alpha_t)) * (M_t - ((1 - alpha_t)/torch.sqrt(1 - self.alpha_bar(t)))*model_output ) + self.sigma(t) * z
         return M_t # generated mel-spectrogram
