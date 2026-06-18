@@ -2,6 +2,9 @@ import torch
 import torch.nn.functional as F
 
 def get_loss_function(config):
+    """
+    In DiffSinger, they use a linear combination of the L1 and SSIM losses, e.g. loss = 0.5 * L1_loss + 0.5 * ssim_loss, see e.g. https://github.com/MoonInTheRiver/DiffSinger/blob/ce7789f1427ddcdec647b3ab2bf2d1b12134e51e/configs/tts/fs2.yaml#L54
+    """
     weights = {
         'l1': config.get('l1_weight', 0),
         'ssim': config.get('ssim_weight', 0),
@@ -47,9 +50,6 @@ def L1_loss(ground_truth_mel, output_mel, mel_padding_mask):
     loss = torch.abs(diff).sum(dim=(1,2)) / (counts * M) # shape (B,) -- normalize by T * M * B to take the average over all terms, but we use `counts` instead of `T` because we don't want to average over padding terms
     loss = torch.sum(loss) / B # average over all batches
     return loss
-
-
-# TODO, define ssim loss because they use linear combination of l1 and ssim, see 
 
 def ssim_loss(ground_truth_mel, output_mel, mel_padding_mask, bias=6.0):
     """
