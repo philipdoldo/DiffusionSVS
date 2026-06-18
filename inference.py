@@ -16,8 +16,8 @@ if __name__ == "__main__":
 
     CKPT_PATH   = "third_party/DiffSinger-vocoder/model_ckpt_steps_280000.ckpt" # checkpoint from the .zip file downloaded
     CONFIG_PATH = "third_party/DiffSinger-vocoder/config.yaml" # config from the .zip file downloaded
-    TEST_H5     = "/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/test.h5"##"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-13-2026-19h51m02s/test.h5"
-    OUTPUT_PATH = "_output/inference_output.wav"
+    TEST_H5     = "/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/test.h5"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/test.h5"##"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-13-2026-19h51m02s/test.h5"
+    OUTPUT_PATH = "_output/inference_output1.wav"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     denoiser.load_state_dict(denoiser_checkpoint['model'])
     denoiser.eval().to(device)
 
-    train_stats_path = "/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/train_stats.npz" #"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s/train_stats.npz"
+    train_stats_path = "/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/train_stats.npz"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/train_stats.npz" #"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s/train_stats.npz"
     stats = np.load(train_stats_path)
     test_loader = NaiveDataLoader(data_path=TEST_H5, batch_size=1, padding_value=0, rng_seed=21, diffusion_k=100, stats_path=train_stats_path)
 
@@ -85,6 +85,7 @@ if __name__ == "__main__":
 
     print(f"{mel_tensor.shape=}")
     print(f"{f0_tensor.shape=}")
+    mel_tensor = torch.clamp(mel_tensor, min=-6, max=1.5)
 
     with torch.no_grad():
         print(f"{mel.min()=}, {mel.max()=}, {mel.mean()=}") 
