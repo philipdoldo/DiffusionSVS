@@ -504,7 +504,7 @@ if __name__ == "__main__":
 
         write0(f"Step {step}:{' '*(8 - len(str(step)))}{(t1-t0)*1000:.0f}ms    train loss: {train_loss.item():.6f}    lr: {lr:.6f}    grad norm: {norm.item():.6f} \n", log_file=log_file)
         csv_val_loss = None if not computed_val_loss_this_iteration else val_loss.item()
-        write0(",".join([step, train_loss.item(), csv_val_loss, lr, norm.item()]) + "\n", log_file=log_csv)
+        write0(",".join(map(str, [step, train_loss.item(), csv_val_loss, lr, norm.item()])) + "\n", log_file=log_csv)
         # with open(log_file, 'a') as f:
         #     f.write(f"    {step=}    {rank=}   {batch['ph_padding_mask'].shape=}    {torch.sum(batch['ph_padding_mask'])=}    {batch['mel_padding_mask'].shape=}    {torch.sum(batch['mel_padding_mask'])=}\n")
 
