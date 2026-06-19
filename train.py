@@ -293,9 +293,12 @@ if __name__ == "__main__":
     # Initialize log file
     log_dir = create_log_dir(save_dir, config_name=Path(args.config).stem) # we wait until after DDP to define this and it gets shared across ranks
     log_file = f"{log_dir}/log.txt"
+    log_csv = f"{log_dir}/log.csv"
     if rank == 0:
         with open(log_file, 'w') as f:
             f.write("") # initialize log file
+        with open(log_csv, 'w') as f:
+            f.write(",".join(["step", "train_loss", "val_loss", "lr", "grad_norm"])) # initialize header for csv
 
         with open(os.path.join(log_dir, "config.toml"), "w") as f:
             toml.dump(config, f) # save copy of config in log directory
@@ -361,6 +364,7 @@ if __name__ == "__main__":
         
     # TRAINING LOOP
     for step in range(initial_step, training_steps):
+        computed_val_loss_this_iteration = False
 
         # SAVE CHECKPOINTS
         if (step % checkpoint_interval == 0 or step == training_steps - 1):
@@ -433,6 +437,7 @@ if __name__ == "__main__":
                 ema.restore(model.parameters()) # copy stored model weights back into the model
                 torch.set_rng_state(rng_state) # restore rng state on rank 0
                 t1 = time.time()
+                computed_val_loss_this_iteration = True
                 write0(f"val loss: {val_loss}{' '*(8 - len(str(step)))}{(t1-t0)*1000:.0f}ms\n", log_file=log_file)
 
         # TRAINING
@@ -488,15 +493,18 @@ if __name__ == "__main__":
         
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         
+        lr = get_lr(step)
         for param_group in optimizer.param_groups:
-            param_group['lr'] = get_lr(step)
+            param_group['lr'] = lr
         optimizer.step()
         ema.update(model.parameters())
         model.zero_grad(set_to_none=True)
         torch.cuda.synchronize()
         t1 = time.time()
 
-        write0(f"Step {step}:{' '*(8 - len(str(step)))}{(t1-t0)*1000:.0f}ms    train loss: {train_loss.item():.6f}    grad norm: {norm.item():.6f}\n", log_file=log_file)
+        write0(f"Step {step}:{' '*(8 - len(str(step)))}{(t1-t0)*1000:.0f}ms    train loss: {train_loss.item():.6f}    lr: {lr:.6f}    grad norm: {norm.item():.6f} \n", log_file=log_file)
+        csv_val_loss = None if not computed_val_loss_this_iteration else val_loss.item()
+        write0(",".join([step, train_loss.item(), csv_val_loss, lr, norm.item()]) + "\n", log_file=log_csv)
         # with open(log_file, 'a') as f:
         #     f.write(f"    {step=}    {rank=}   {batch['ph_padding_mask'].shape=}    {torch.sum(batch['ph_padding_mask'])=}    {batch['mel_padding_mask'].shape=}    {torch.sum(batch['mel_padding_mask'])=}\n")
 
