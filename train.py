@@ -248,7 +248,9 @@ if __name__ == "__main__":
             encoder_decoder.load_state_dict(encoder_checkpoint["model"])
             model.encoder = encoder_decoder.encoder
             print0(f"ENCODER LOADED WITH CHECKPOINT {encoder_checkpoint_path}\n")
-        freeze(model.encoder)
+        if model_config.get('freeze_encoder', True):
+            freeze(model.encoder)
+            print0("ENCODER PARAMETERS ARE FROZEN")
         diffusion_k = config['training']['diffusion']['k']
     else:
         raise ValueError(f"{model_config['model_type']=}")
