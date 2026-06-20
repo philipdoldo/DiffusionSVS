@@ -441,7 +441,7 @@ if __name__ == "__main__":
                 torch.set_rng_state(rng_state) # restore rng state on rank 0
                 model.train()
                 if model_config.get("freeze_encoder", True) and model_config["model_type"] == "WaveNetDenoiser":
-                    model.encoder.eval() # keep the frozen encoder in eval to ignore dropout
+                    model.module.encoder.eval() if isinstance(model, DDP) else model.encoder.eval() # keep the frozen encoder in eval to ignore dropout
                 t1 = time.time()
                 computed_val_loss_this_iteration = True
                 write0(f"val loss: {val_loss}{' '*(8 - len(str(step)))}{(t1-t0)*1000:.0f}ms\n", log_file=log_file)
