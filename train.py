@@ -118,7 +118,6 @@ class DiffusionProcess:
             model.eval()
             B, T = mel_padding_mask.shape # do not confuse T (number of mel frames) with self.T (total diffusion time steps)
             M_t = torch.randn((B, M, T), device=self.device)
-            model.eval()
             for i in range(self.T, 0, -1):
                 t = torch.ones(B, dtype=torch.long, device=self.device) * i # shape (B,)
 
@@ -250,6 +249,7 @@ if __name__ == "__main__":
             print0(f"ENCODER LOADED WITH CHECKPOINT {encoder_checkpoint_path}\n")
         if model_config.get('freeze_encoder', True):
             freeze(model.encoder)
+            model.encoder.eval() # if the encoder is frozen, we don't want dropout active inside it
             print0("ENCODER PARAMETERS ARE FROZEN")
         diffusion_k = config['training']['diffusion']['k']
     else:
@@ -393,6 +393,7 @@ if __name__ == "__main__":
             with torch.no_grad():
                 
                 t0 = time.time()
+                model.eval()
                 rng_state = torch.get_rng_state() # val might change rng state on rank 0, so save and restore it just in case, probably not very important
                 val_loader = NaiveDataLoader(data_path=val_data_path, batch_size=batch_size, padding_value=config["model"]["pad_token_id"], diffusion_k=diffusion_k, stats_path=train_data_stats_path) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
                 val_loader.reset() # should be unnecessary
@@ -438,6 +439,9 @@ if __name__ == "__main__":
                 val_loss = sum(val_losses) / len(val_losses)
                 ema.restore(model.parameters()) # copy stored model weights back into the model
                 torch.set_rng_state(rng_state) # restore rng state on rank 0
+                model.train()
+                if model_config.get("freeze_encoder", True) and model_config["model_type"] == "WaveNetDenoiser":
+                    model.encoder.eval() # keep the frozen encoder in eval to ignore dropout
                 t1 = time.time()
                 computed_val_loss_this_iteration = True
                 write0(f"val loss: {val_loss}{' '*(8 - len(str(step)))}{(t1-t0)*1000:.0f}ms\n", log_file=log_file)
