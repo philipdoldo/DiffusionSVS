@@ -45,11 +45,15 @@ class DiffusionProcess:
 
         Each timestep must be in {1, ..., T} and we will have beta increase linearly from t=1 to t=T
         """
+        if torch.any(t < 1) or torch.any(t > self.T):
+            raise ValueError(f"t must be in [1, {self.T}], got min={t.min().item()}, max={t.max().item()}")
         slope = (self.beta_max - self.beta_min) / (self.T - 1) # scalar
         beta = slope * (t - 1) + self.beta_min # shape (B,) --  have line pass through the point (t=1, beta=beta_min)
         return beta
     
     def alpha(self, t):
+        if torch.any(t < 1) or torch.any(t > self.T):
+            raise ValueError(f"t must be in [1, {self.T}], got min={t.min().item()}, max={t.max().item()}")
         return 1 - self.beta(t)
 
     def alpha_bar(self, t):
@@ -60,6 +64,8 @@ class DiffusionProcess:
         I'm just going to precompute all possible values of alpha_bar so we don't recompute the products all the time. 
         Not sure if this even matters much in terms of computational cost, but surely it doesn't hurt.
         """
+        if torch.any(t < 1) or torch.any(t > self.T):
+            raise ValueError(f"t must be in [1, {self.T}], got min={t.min().item()}, max={t.max().item()}")
         return self.alpha_bars[t-1] # shape (B,) -- we subtract 1 from t because index 0 in self.alpha_bars corresponds to timestep 1, etc.
 
     def precompute_alpha_bars(self):
@@ -118,7 +124,7 @@ class DiffusionProcess:
             model.eval()
             B, T = mel_padding_mask.shape # do not confuse T (number of mel frames) with self.T (total diffusion time steps)
             M_t = torch.randn((B, M, T), device=self.device)
-            for i in range(self.T, 0, -1):
+            for i in range(self.T, 1, -1): # TODO
                 t = torch.ones(B, dtype=torch.long, device=self.device) * i # shape (B,)
 
                 model_output = model(
