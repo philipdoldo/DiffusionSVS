@@ -18,18 +18,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-def mel2ph_to_dur(mel2ph, P, max_dur=None):
+def mel2ph_to_dur(mel2ph, P, mel_padding_mask, max_dur=None):
     """
     `mel2ph` has shape (B, T)
     `P` is an integer corresponding to how long the phoneme sequence of `txt_tokens` is
+    `mel_padding_mask` has shape (B, T) and is True if the mel frame index (for a given batch index) corresponds to a padding value, False otherwise
     This function returns a shape (B, P) tensor `dur` where index i of the phoneme sequence is the number of mel frames that
     position i of `txt_tokens` lasted for, so basically just a tensor of the durations of each phoneme in `txt_tokens`. 
     
     The durations tensor `dur` is used in the encoder to create a duration embedding by passing `dur` into a linear layer,
-    the duration embedding is provided to the phoneme text encoder as conditioning.
+    the duration embedding is provided to the phoneme text encoder as conditioning. `mel_padding_mask` is important to stop
+    padding values of 0 contributing to the duration count of index 0 of mel2ph
     """
     B, _ = mel2ph.shape
-    dur = mel2ph.new_zeros(B, P).scatter_add(1, mel2ph, torch.ones_like(mel2ph))
+    mask = torch.logical_not(mel_padding_mask) # shape (B, T), True (1) for non-padding values, False (0) for padding values
+    dur = mel2ph.new_zeros(B, P).scatter_add(dim=1, index=mel2ph, src=mask) # self[i][index[i][j]] += src[i][j]  # if dim == 1
     if max_dur is not None:
         dur = dur.clamp(max=max_dur)
     return dur # shape (B, P)
@@ -298,7 +301,7 @@ class MusicScoreEncoder(nn.Module):
             boolean mask which is True when the audio was unvoiced, corresponds to where the preinterpolated f0 was zero. False otherwise.
             TODO `uv` appears to be unused in training? possibly used in validation?
         """
-        dur = mel2ph_to_dur(mel2ph, txt_tokens.shape[1]).float() # (B, P)
+        dur = mel2ph_to_dur(mel2ph=mel2ph, P=txt_tokens.shape[1], mel_padding_mask=mel_padding_mask).float() # (B, P)
         dur_embed = self.dur_embed(dur[:, :, None]) # (B, P, embedding_dim) -- (B, P, 1) x (1, embedding_dim) ### each row is the same embedding weights scaled by the duration (the same bias is added to each row)
 
         phoneme_text_embeddings = self.phoneme_text_encoder(token_ids=txt_tokens, cond=dur_embed, ph_padding_mask=ph_padding_mask) # (B. P, embedding_dim)
