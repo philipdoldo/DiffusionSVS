@@ -31,7 +31,7 @@ def mel2ph_to_dur(mel2ph, P, mel_padding_mask, max_dur=None):
     padding values of 0 contributing to the duration count of index 0 of mel2ph
     """
     B, _ = mel2ph.shape
-    mask = torch.logical_not(mel_padding_mask) # shape (B, T), True (1) for non-padding values, False (0) for padding values
+    mask = torch.logical_not(mel_padding_mask).to(dtype=mel2ph.dtype) # shape (B, T), True (1) for non-padding values, False (0) for padding values -- needs to be same dtype as mel2ph because scatter_add requires that `self.dtype` equals `src.dtype`
     dur = mel2ph.new_zeros(B, P).scatter_add(dim=1, index=mel2ph, src=mask) # self[i][index[i][j]] += src[i][j]  # if dim == 1
     if max_dur is not None:
         dur = dur.clamp(max=max_dur)
