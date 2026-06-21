@@ -60,8 +60,10 @@ def rmsnorm(x):
     `x` has shape (B, L, d) and the RMS (which is just 2-norm scaled by 1/sqrt(d) in R^d) is computed for every vector of channels
     No learnable parameters. I want to try rmsnorm since I used it in language models. 
     """
+    orig_dtype = x.dtype
+    x = x.float() # cast up to fp32
     rms = (x.pow(2).mean(dim=-1, keepdim=True) + 1e-8).sqrt() # shape (B, L, 1)
-    return (x / rms)
+    return (x / rms).to(orig_dtype) # cast back to original dtype, e.g. bf16
 
 def precompute_rotary_embeddings(seq_len, head_dim, base=10000):
     # stride the channels

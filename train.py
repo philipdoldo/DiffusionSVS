@@ -171,7 +171,7 @@ def create_log_dir(parent_dir, config_name):
         sample_dir = os.path.join(log_dir, "samples") # store image samples made during training here
         os.makedirs(sample_dir, exist_ok=True)
 
-    # if using DDP, defined the directory on all ranks to allow any rank to write to the log file if desired
+    # if using DDP, define the directory on all ranks to allow any rank to write to the log file if desired
     if dist.is_available() and dist.is_initialized():
         obj = [log_dir]
         dist.broadcast_object_list(obj, src=0)
@@ -196,6 +196,7 @@ if __name__ == "__main__":
     batch_size = config["training"]["batch_size"]
     grad_accum_steps = config["training"]["grad_accum_steps"]
     training_steps = config["training"]["training_steps"]
+    clip_grad_norm_threshold = config['training'].get('clip_grad_norm_threshold', 1.0)
 
     val_loss_interval = config["training"]["val_loss_interval"]
     checkpoint_interval = config["training"]["checkpoint_interval"]
@@ -285,6 +286,7 @@ if __name__ == "__main__":
         assert rank == dist.get_rank(), f"{rank=}, {dist.get_rank()=}"
 
         device = f'cuda:{local_rank}'
+        device_type = 'cuda'
         torch.cuda.set_device(device)
         print(f"{rank=}, {local_rank=}, {world_size=}, {device=}")
     else:
@@ -292,6 +294,7 @@ if __name__ == "__main__":
         local_rank = 0
         world_size = 1
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device_type = device
         print(f"{rank=}, {local_rank=}, {world_size=}, {device=}")
 
     # sanity check inputs
@@ -345,6 +348,26 @@ if __name__ == "__main__":
 
     loss_function = get_loss_function(config['training']['loss'])
 
+    # Define dtype for optional mixed precision training, if fp16 we will use GradScaler -- partially borrowed scaler logic from https://github.com/karpathy/nanochat/blob/master/scripts/base_train.py
+    compute_dtype = config['training'].get('compute_dtype', 'fp32')
+    amp_dtypes = ['fp16', 'bf16']
+    valid_dtypes = ['fp32'] + amp_dtypes
+    amp_dtype = None
+    if compute_dtype == "fp16":
+        amp_dtype = torch.float16
+    elif compute_dtype == "bf16":
+        amp_dtype = torch.bfloat16
+    amp_enabled = True if compute_dtype in amp_dtypes else False
+
+    if compute_dtype not in valid_dtypes:
+        raise ValueError(f"Expected one of {valid_dtypes=}, but got {compute_dtype=}")
+    write0(f"Training with dtype {compute_dtype} ({amp_dtype=}, {amp_enabled=})\n", log_file=log_file)
+    # GradScaler for fp16 training (bf16/fp32 don't need it -- bf16 has the same exponent range as fp32)
+    scaler = torch.amp.GradScaler() if compute_dtype == 'fp16' else None
+    if scaler is not None:
+        print0(f"GradScaler is enabled for fp16 training ({amp_dtype=}, {amp_enabled=})")
+        write0(f"GradScaler is enabled for fp16 training ({amp_dtype=}, {amp_enabled=})\n", log_file=log_file)
+
     if config["training"].get("resume_training", False):
         optimizer.load_state_dict(checkpoint["optimizer"])
         ema.load_state_dict(checkpoint["ema"], device=device)
@@ -356,6 +379,10 @@ if __name__ == "__main__":
         train_loader.load_state_dict(dataloader_state) # Must be called on ALL ranks (does broadcast internally)
 
         initial_step = checkpoint["step"]
+
+        if scaler is not None and checkpoint.get('scaler') is not None:
+            scaler.load_state_dict(checkpoint['scaler'])
+            write0(f"Restored GradScaler state dict from checkpoint\n", log_file=log_file)
 
         write0(f"RESUMING TRAINING WITH CHECKPOINT {config['training']['checkpoint_path']} AT STEP {initial_step}\n", log_file=log_file)
     else:
@@ -387,6 +414,7 @@ if __name__ == "__main__":
                     'dataloader' : dataloader_state_dict,
                     'ema' : {'ema_params' : ema.ema_params, 'decay' : ema.decay},
                     'rng_seeds' : prior_rng_seeds,
+                    "scaler": scaler.state_dict() if scaler is not None else None,
                 }
                 checkpoint_path = os.path.join(log_dir, f'checkpoints/checkpoint_step{step}.pt')
                 torch.save(checkpoint, checkpoint_path)
@@ -412,33 +440,34 @@ if __name__ == "__main__":
 
                     # whatever, I'm just hardcoding this for now...
                     val_ground_truth_mel = val_batch['mel']
-                    if config['model']['model_type'] == "WaveNetDenoiser": # just hardcoding some stuff like this for now...
+                    with torch.amp.autocast(device_type, dtype=amp_dtype, enabled=amp_enabled): # just put forward pass and loss computation inside amp
+                        if config['model']['model_type'] == "WaveNetDenoiser": # just hardcoding some stuff like this for now...
 
-                        val_interpolant = diffusion.get_interpolant(mel=val_ground_truth_mel, epsilon=val_batch['epsilon'], t=val_batch['t'])
+                            val_interpolant = diffusion.get_interpolant(mel=val_ground_truth_mel, epsilon=val_batch['epsilon'], t=val_batch['t'])
 
-                        val_model_output = model(
-                            txt_tokens=val_batch['txt_tokens'], 
-                            mel2ph=val_batch['mel2ph'],
-                            f0=val_batch['f0'], # TODO need to standardize? probably do in collator?
-                            uv=val_batch['uv'], 
-                            ph_padding_mask=val_batch['ph_padding_mask'], 
-                            mel_padding_mask=val_batch['mel_padding_mask'],
-                            mel=val_interpolant, 
-                            t=val_batch['t']
-                            )
-                        val_loss = loss_function(ground_truth_mel=val_batch['epsilon'], output_mel=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
-                    elif config['model']['model_type'] == "EncoderDecoder":
-                        val_model_output = model(
-                            txt_tokens=val_batch['txt_tokens'],
-                            mel2ph=val_batch['mel2ph'],
-                            f0=val_batch['f0'],
-                            uv=val_batch['uv'],
-                            ph_padding_mask=val_batch['ph_padding_mask'],
-                            mel_padding_mask=val_batch['mel_padding_mask']
-                            )
-                        val_loss = loss_function(ground_truth_mel=val_ground_truth_mel, output_mel=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
-                    else:
-                        raise ValueError(f"{config['model']['model_type']=}")
+                            val_model_output = model(
+                                txt_tokens=val_batch['txt_tokens'], 
+                                mel2ph=val_batch['mel2ph'],
+                                f0=val_batch['f0'], # TODO need to standardize? probably do in collator?
+                                uv=val_batch['uv'], 
+                                ph_padding_mask=val_batch['ph_padding_mask'], 
+                                mel_padding_mask=val_batch['mel_padding_mask'],
+                                mel=val_interpolant, 
+                                t=val_batch['t']
+                                )
+                            val_loss = loss_function(ground_truth_mel=val_batch['epsilon'], output_mel=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
+                        elif config['model']['model_type'] == "EncoderDecoder":
+                            val_model_output = model(
+                                txt_tokens=val_batch['txt_tokens'],
+                                mel2ph=val_batch['mel2ph'],
+                                f0=val_batch['f0'],
+                                uv=val_batch['uv'],
+                                ph_padding_mask=val_batch['ph_padding_mask'],
+                                mel_padding_mask=val_batch['mel_padding_mask']
+                                )
+                            val_loss = loss_function(ground_truth_mel=val_ground_truth_mel, output_mel=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
+                        else:
+                            raise ValueError(f"{config['model']['model_type']=}")
 
                     #val_loss = loss_function(ground_truth_mel=val_ground_truth_mel, output_mel=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
                     val_losses.append(val_loss)
@@ -468,47 +497,68 @@ if __name__ == "__main__":
             # the .backward() call (with require_backward_grad_sync True), they are averaged over all ranks, so the resulting gradient has
             # per_gpu_batch_size * num_gpus in the denominator. Dividing the loss by grad_accum_steps gives us the correct final denominator.
             ground_truth_mel = batch['mel'] # TODO need to normalize? probably do in collator and rename collator to pad and norm or something
-            if config['model']['model_type'] == "WaveNetDenoiser": # just hardcoding some stuff like this for now...
+            
 
-                interpolant = diffusion.get_interpolant(mel=ground_truth_mel, epsilon=batch['epsilon'], t=batch['t'])
+            with torch.amp.autocast(device_type, dtype=amp_dtype, enabled=amp_enabled): # just put forward pass and loss computation inside amp
 
-                model_output = model(
-                    txt_tokens=batch['txt_tokens'], 
-                    mel2ph=batch['mel2ph'],
-                    f0=batch['f0'], # TODO need to standardize? probably do in collator?
-                    uv=batch['uv'], 
-                    ph_padding_mask=batch['ph_padding_mask'], 
-                    mel_padding_mask=batch['mel_padding_mask'],
-                    mel=interpolant, 
-                    t=batch['t']
-                    )
-                loss = loss_function(ground_truth_mel=batch['epsilon'], output_mel=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
-            elif config['model']['model_type'] == "EncoderDecoder":
-                model_output = model(
-                    txt_tokens=batch['txt_tokens'],
-                    mel2ph=batch['mel2ph'],
-                    f0=batch['f0'],
-                    uv=batch['uv'],
-                    ph_padding_mask=batch['ph_padding_mask'],
-                    mel_padding_mask=batch['mel_padding_mask']
-                    )
-                loss = loss_function(ground_truth_mel=ground_truth_mel, output_mel=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
-            else:
-                raise ValueError(f"{config['model']['model_type']=}")
+                if config['model']['model_type'] == "WaveNetDenoiser": # just hardcoding some stuff like this for now...
+
+                    interpolant = diffusion.get_interpolant(mel=ground_truth_mel, epsilon=batch['epsilon'], t=batch['t'])
+
+                    model_output = model(
+                        txt_tokens=batch['txt_tokens'], 
+                        mel2ph=batch['mel2ph'],
+                        f0=batch['f0'], # TODO need to standardize? probably do in collator?
+                        uv=batch['uv'], 
+                        ph_padding_mask=batch['ph_padding_mask'], 
+                        mel_padding_mask=batch['mel_padding_mask'],
+                        mel=interpolant, 
+                        t=batch['t']
+                        )
+                    loss = loss_function(ground_truth_mel=batch['epsilon'], output_mel=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
+                elif config['model']['model_type'] == "EncoderDecoder":
+                    model_output = model(
+                        txt_tokens=batch['txt_tokens'],
+                        mel2ph=batch['mel2ph'],
+                        f0=batch['f0'],
+                        uv=batch['uv'],
+                        ph_padding_mask=batch['ph_padding_mask'],
+                        mel_padding_mask=batch['mel_padding_mask']
+                        )
+                    loss = loss_function(ground_truth_mel=ground_truth_mel, output_mel=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
+                else:
+                    raise ValueError(f"{config['model']['model_type']=}")
 
             #loss = loss_function(ground_truth_mel=ground_truth_mel, output_mel=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps # uhh, surely this was a typo?? I need the target to be different during diffusion
             train_loss += loss.detach() # for logging
-            loss.backward()
+
+            if scaler is not None:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
         if dist.is_initialized():
             dist.all_reduce(train_loss, op=dist.ReduceOp.AVG) # for logging
         
-        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        
         lr = get_lr(step)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
-        optimizer.step()
+
+        if scaler is not None:
+            scaler.unscale_(optimizer) # important that this is done before clip_grad_norm
+            # In distributed training, all ranks must agree on whether to skip the step.
+            # Each rank may independently encounter inf/nan gradients, so we all-reduce
+            # the found_inf flag (MAX = if any rank found inf, all ranks skip).
+            if dist.is_available() and dist.is_initialized():
+                for v in scaler._found_inf_per_device(optimizer).values():
+                    dist.all_reduce(v, op=dist.ReduceOp.MAX)
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm_threshold) # we need to do this after unscaling, otherwise it uses the scaled up values to determine if the clipping threshold has been reached
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm_threshold)
+            optimizer.step()
+
         ema.update(model.parameters())
         model.zero_grad(set_to_none=True)
         torch.cuda.synchronize()
