@@ -429,7 +429,7 @@ if __name__ == "__main__":
                 t0 = time.time()
                 model.eval()
                 rng_state = torch.get_rng_state() # val might change rng state on rank 0, so save and restore it just in case, probably not very important
-                val_loader = NaiveDataLoader(data_path=val_data_path, batch_size=batch_size, padding_value=config["model"]["pad_token_id"], diffusion_k=diffusion_k, stats_path=train_data_stats_path) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
+                val_loader = NaiveDataLoader(data_path=val_data_path, batch_size=min(batch_size, config['training'].get('val_dataset_length', 24)), padding_value=config["model"]["pad_token_id"], diffusion_k=diffusion_k, stats_path=train_data_stats_path) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
                 val_loader.reset() # should be unnecessary
 
                 ema.store(model.parameters()) # store copy of the actual model weights
