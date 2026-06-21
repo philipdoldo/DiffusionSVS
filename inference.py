@@ -11,13 +11,14 @@ from modules.hifigan.hifigan import HifiGanGenerator
 from data.dataloader import NaiveDataLoader
 from model import WaveNetDenoiser
 from train import DiffusionProcess
+from exponential_moving_average import ExponentialMovingAverage
 
 if __name__ == "__main__":
 
     CKPT_PATH   = "third_party/DiffSinger-vocoder/model_ckpt_steps_280000.ckpt" # checkpoint from the .zip file downloaded
     CONFIG_PATH = "third_party/DiffSinger-vocoder/config.yaml" # config from the .zip file downloaded
     TEST_H5     = "/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/test.h5"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/test.h5"##"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-13-2026-19h51m02s/test.h5"
-    OUTPUT_PATH = "_output/inference_output1.wav"
+    OUTPUT_PATH = "_output/inference_output0-ok4-160k-bugfix.wav"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -30,9 +31,9 @@ if __name__ == "__main__":
     vocoder.remove_weight_norm()
     vocoder.eval().to(device)
 
-    denoiser_checkpoint_path = "/home/phil/DiffusionSVS/experiments/copied/checkpoint_step159999.pt" #"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/experiments/_train-wavenet-denoiser/06-15-2026-16h33m52s/checkpoints/checkpoint_step159999.pt"
+    denoiser_checkpoint_path = "/home/phil/DiffusionSVS/experiments/copied/checkpoint_step159999.pt"#"/home/phil/DiffusionSVS/experiments/copied/ok1/checkpoint_step159999.pt"#"/home/phil/DiffusionSVS/experiments/copied/checkpoint_step159999.pt" #"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/experiments/_train-wavenet-denoiser/06-15-2026-16h33m52s/checkpoints/checkpoint_step159999.pt"
     denoiser_checkpoint = torch.load(denoiser_checkpoint_path, map_location=device)
-    denoiser_config_path = "/home/phil/DiffusionSVS/experiments/copied/config.toml" #"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/experiments/_train-wavenet-denoiser/06-15-2026-16h33m52s/config.toml"
+    denoiser_config_path = "/home/phil/DiffusionSVS/experiments/copied/ok4/config.toml"#"/home/phil/DiffusionSVS/experiments/copied/ok1/config.toml"#"/home/phil/DiffusionSVS/experiments/copied/config.toml" #"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/experiments/_train-wavenet-denoiser/06-15-2026-16h33m52s/config.toml"
     with open(denoiser_config_path, "r") as f:
         denoiser_config = toml.load(f)
     denoiser = WaveNetDenoiser(denoiser_config['model'])
@@ -85,7 +86,7 @@ if __name__ == "__main__":
 
     print(f"{mel_tensor.shape=}")
     print(f"{f0_tensor.shape=}")
-    mel_tensor = torch.clamp(mel_tensor, min=-6, max=1.5)
+    #mel_tensor = torch.clamp(mel_tensor, min=-6, max=1.5)
 
     with torch.no_grad():
         print(f"{mel.min()=}, {mel.max()=}, {mel.mean()=}") 
