@@ -9,7 +9,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from pathlib import Path
-from model import MusicScoreEncoder, AuxiliaryDecoder, WaveNet, EncoderDecoder, WaveNetDenoiser
+from model import MusicScoreEncoder, AuxiliaryDecoder, WaveNet, EncoderDecoder, WaveNetDenoiser, DiT
 from exponential_moving_average import ExponentialMovingAverage
 from data.dataloader import NaiveDataLoader
 from loss_functions import get_loss_function
@@ -259,6 +259,9 @@ if __name__ == "__main__":
             model.encoder.eval() # if the encoder is frozen, we don't want dropout active inside it
             print0("ENCODER PARAMETERS ARE FROZEN")
         diffusion_k = config['training']['diffusion']['k']
+    elif model_config["model_type"] == "DiT":
+        model = DiT(model_config)
+        diffusion_k = config['training']['diffusion']['k']
     else:
         raise ValueError(f"{model_config['model_type']=}")
 
@@ -389,7 +392,7 @@ if __name__ == "__main__":
         initial_step = 0 # if not resuming training, have training loop start at step 0
 
     torch.manual_seed(config["training"]["rng_seed"] + rank) # (I guess this affects the categorical sampling, random times are in the dataloader)
-    if config['model']['model_type'] == "WaveNetDenoiser": # just hardcoding some stuff like this for now...
+    if config['model']['model_type'] in ["WaveNetDenoiser", "DiT"]: # just hardcoding some stuff like this for now...
         diffusion = DiffusionProcess(
             beta_min=config['training']['diffusion']['beta_min'], 
             beta_max=config['training']['diffusion']['beta_max'], 
@@ -441,7 +444,7 @@ if __name__ == "__main__":
                     # whatever, I'm just hardcoding this for now...
                     val_ground_truth_mel = val_batch['mel']
                     with torch.amp.autocast(device_type, dtype=amp_dtype, enabled=amp_enabled): # just put forward pass and loss computation inside amp
-                        if config['model']['model_type'] == "WaveNetDenoiser": # just hardcoding some stuff like this for now...
+                        if config['model']['model_type'] in ["WaveNetDenoiser", "DiT"]: # just hardcoding some stuff like this for now...
 
                             val_interpolant = diffusion.get_interpolant(mel=val_ground_truth_mel, epsilon=val_batch['epsilon'], t=val_batch['t'])
 
@@ -501,7 +504,7 @@ if __name__ == "__main__":
 
             with torch.amp.autocast(device_type, dtype=amp_dtype, enabled=amp_enabled): # just put forward pass and loss computation inside amp
 
-                if config['model']['model_type'] == "WaveNetDenoiser": # just hardcoding some stuff like this for now...
+                if config['model']['model_type'] in ["WaveNetDenoiser", "DiT"]: # just hardcoding some stuff like this for now...
 
                     interpolant = diffusion.get_interpolant(mel=ground_truth_mel, epsilon=batch['epsilon'], t=batch['t'])
 

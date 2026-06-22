@@ -138,76 +138,6 @@ class BidirectionalSelfAttention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, embed_dim)
         return self.Wo(y)
 
-
-# import xformers.ops as xops ##### xformers is slower!
-
-# class BidirectionalSelfAttention(nn.Module):
-
-#     def __init__(self, config):
-#         super().__init__()
-#         self.Wq = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
-#         self.Wk = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
-#         self.Wv = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
-#         self.Wo = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
-
-#         self.num_heads = config['num_attention_heads']
-#         self.embed_dim = config['embedding_dim']
-
-#     def forward(self, x, cos_sin, attn_mask):
-#         """
-#         `x` has shape (batch_size, seq_len, embed_dim)
-#         `attn_mask` has shape (batch_size, seq_len) and is True for entries that should take part in attention and False otherwise
-#         """
-#         batch_size, seq_len, embed_dim = x.shape
-#         q, k, v = self.Wq(x), self.Wk(x), self.Wv(x) # each has shape (batch_size, seq_len, embed_dim)
-
-#         head_dim = embed_dim // self.num_heads
-#         assert self.num_heads * head_dim == embed_dim, f"{self.num_heads=}, {head_dim=}, {embed_dim=}"
-
-#         q = q.view(batch_size, seq_len, self.num_heads, head_dim) # (batch_size, seq_len, num_heads, head_dim)
-#         k = k.view(batch_size, seq_len, self.num_heads, head_dim) # (batch_size, seq_len, num_heads, head_dim)
-#         v = v.view(batch_size, seq_len, self.num_heads, head_dim) # (batch_size, seq_len, num_heads, head_dim)
-
-#         # Apply Rotary Embeddings to queries and keys to get relative positional encoding
-#         cos, sin = cos_sin
-#         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin) # QK rotary embedding
-#         q, k = rmsnorm(q), rmsnorm(k) # QK norm
-
-#         # xFormers expects (batch_size, seq_len, num_heads, head_dim), so unlike PyTorch SDPA we do NOT transpose heads ahead of sequence
-
-#         # # Construct additive attention bias from padding mask
-#         # # attn_bias = torch.zeros(batch_size, seq_len, seq_len, device=x.device, dtype=q.dtype) # (batch_size, query_seq_len, key_seq_len)
-#         # # attn_bias.masked_fill_(torch.logical_not(attn_mask)[:, None, :], float('-inf')) # (batch_size, query_seq_len, key_seq_len)
-#         # attn_bias = torch.zeros(batch_size, self.num_heads, seq_len, seq_len, device=x.device, dtype=q.dtype) # (batch_size, num_heads, query_seq_len, key_seq_len)
-#         # attn_bias.masked_fill_(torch.logical_not(attn_mask)[:, None, None, :], float('-inf')) # (batch_size, 1, 1, key_seq_len), broadcasts over num_heads and query_seq_len
-
-#         #######3
-#         # Construct additive attention bias from padding mask
-#         aligned_seq_len = ((seq_len + 7) // 8) * 8
-
-#         attn_bias = torch.zeros(
-#             batch_size,
-#             self.num_heads,
-#             seq_len,
-#             aligned_seq_len,
-#             device=x.device,
-#             dtype=q.dtype,
-#         )[:, :, :, :seq_len] # (batch_size, num_heads, query_seq_len, key_seq_len)
-
-#         attn_bias.masked_fill_(
-#             torch.logical_not(attn_mask)[:, None, None, :],
-#             float('-inf'),
-#         ) # (batch_size, 1, 1, key_seq_len), broadcasts over num_heads and query_seq_len
-#         #######3
-
-#         #y = xops.memory_efficient_attention(q, k, v, attn_bias=attn_bias) # attn bias needs to broadcast with shape (batch_size, query_seq_len, key_seq_len, num_heads), in our case query_seq_len = key_seq_len
-#         y = xops.memory_efficient_attention(q, k, v, attn_bias=attn_bias) # attn bias has shape (batch_size, num_heads, query_seq_len, key_seq_len), in our case query_seq_len = key_seq_len
-
-#         y = y.contiguous().view(batch_size, seq_len, embed_dim)
-#         return self.Wo(y)
-
-
-
 class MLP(nn.Module):
 
     def __init__(self, input_dim, hidden_dim=None, output_dim=None, bias=False):
@@ -458,6 +388,116 @@ class WaveNetDenoiser(nn.Module):
         self.denoiser = WaveNet(config)
     
     def forward(self, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, mel, t):
-        encoder_outputs = self.encoder(txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask)
+        encoder_outputs = self.encoder(txt_tokens=txt_tokens, mel2ph=mel2ph, f0=f0, uv=uv, ph_padding_mask=ph_padding_mask, mel_padding_mask=mel_padding_mask)
         denoiser_outputs = self.denoiser(mel=mel, t=t, cond=encoder_outputs)
         return denoiser_outputs
+    
+#############################################################
+
+class AdaLNProjection(nn.Module):
+    """
+    generates the 6 scale/shift/gates from adaLN-Zero, see DiT paper https://arxiv.org/pdf/2212.09748 
+
+    scales: gamma1, gamma2 in DiT paper
+    shifts: beta1, beta2 in DiT paper
+    gates: alpha1, alpha2 in DiT paper
+
+    default behavior outputs a 6-tuple of tensors of shape (batch_size, 1, embed_dim)
+    We need the 1 dimension to allow for broadcasting with tensors of shape (batch_size, seq_len, embed_dim) in the DiT
+
+    For now, seq_len corresponds to the number of mel frames in our (noisy) mel-spectrogram. Could maybe experiment with HNet-style dynamic chunking
+    """
+    def __init__(self, embed_dim, cond_dim, output_factor=6):
+        super().__init__()
+        self.output_factor = output_factor
+        self.W = nn.Linear(cond_dim, self.output_factor * embed_dim, bias=True)
+        # initializing all weights to be 0 is sufficient for initializing the DiT block to be an identity operation (DiT paper claims this could be good empirically)
+        nn.init.zeros_(self.W.weight)
+        nn.init.zeros_(self.W.bias)
+    
+    def forward(self, c):
+        """
+        `c` has shape (batch_size, cond_dim)
+        """
+        c = F.silu(c)
+        c = self.W(c) # (batch_size, output_factor*embed_dim)
+        return c.unsqueeze(1).chunk(self.output_factor, dim=-1) # output_factor-tuple where each entry has shape (batch_size, 1, embed_dim)
+
+class DiTBlock(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+
+        self.ada_ln_proj = AdaLNProjection(embed_dim=config['embedding_dim'], cond_dim=config['embedding_dim'])
+
+        self.attn = BidirectionalSelfAttention(config)
+        self.mlp = MLP(input_dim=config['embedding_dim'], hidden_dim=4*config['embedding_dim'], output_dim=config['embedding_dim'])
+
+    def forward(self, x, c, cos_sin, attn_mask):
+        """
+        `x` has shape (B, L, d) where B is batch size, L is sequence length, and d is embedding dimension
+            this is basically a tensor containing sequences of token embeddings -- in our case L = T, that
+            is, the sequence length is the number of mel frames
+        `c` has shape (B, d) where B is batch size and d is embedding dimension, this is the conditioning
+            embedding (e.g. time embedding passed through MLP) that gets passed into the DiT block in 
+            Figure 3 of the DiT paper https://arxiv.org/abs/2212.09748
+        `attn_mask` has shape (batch_size, seq_len) and is True for entries that should take part in attention and False otherwise -- seq_len = T in our case
+        """
+        scale1, shift1, gate1, scale2, shift2, gate2 = self.ada_ln_proj(c)
+
+        x = x + gate1 * self.attn( x=F.layer_norm(x, [x.shape[-1]]) * scale1 + shift1, cos_sin=cos_sin, attn_mask=attn_mask ) # I think F.layer_norm should automatically cast to fp32 when using torch.amp.autocast based on https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/autocast_mode.cpp#L274
+        x = x + gate2 * self.mlp( F.layer_norm(x, [x.shape[-1]]) * scale2 + shift2 )
+        return x
+    
+class DiT(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.music_score_encoder = MusicScoreEncoder(config)
+        self.input_projection = Conv1d(in_channels=config['num_mel_bins'], out_channels=config['embedding_dim'], kernel_size=1) # map (B, M, T) to (B, d, T)
+        self.time_emb = SinusoidalPositionalEmbedding(embedding_dim=config['embedding_dim'], base=config['sinusoidal_base'])
+        self.time_emb_mlp = nn.Sequential(
+            nn.Linear(config['embedding_dim'], config['embedding_dim']*4),
+            nn.Mish(),
+            nn.Linear(config['embedding_dim']*4, config['embedding_dim'])
+        ) # copied exactly from WaveNet implementation for now, TODO maybe use MLP class and use config for activation
+        self.blocks = nn.ModuleList([DiTBlock(config) for _ in range(config['num_blocks'])])
+        self.final_ada_ln_proj = AdaLNProjection(embed_dim=config['embedding_dim'], cond_dim=config['embedding_dim'], output_factor=2)
+        self.output_projection = nn.Linear(config['embedding_dim'], config['num_mel_bins'], bias=False)
+        self.num_mel_bins = config['num_mel_bins']
+
+        head_dim = config.embed_dim // config['num_attention_heads']
+        assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
+
+        # Note that these rotary embeddings are for mel-frame sequence positions, NOT phoneme sequence positions as in the case of the music score encoder
+        # TODO change `max_seq_len` in config to `max_phoneme_seq_len`, also test why you used 32k, seems way too long for phonemes! print shapes
+        cos, sin = precompute_rotary_embeddings(seq_len=config['max_mel_frames'], head_dim=head_dim, base=config.rotary_base)
+        self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
+        self.register_buffer("sin", sin, persistent=False)
+
+    def forward(self, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, mel, t):
+        """
+        The time embedding gets treated as the conditional embedding. The music score embeddings
+        """
+        B, M, T = mel.shape 
+        if M != self.num_mel_bins:
+            raise ValueError(f"{mel.shape=}, {self.num_mel_bins=}")
+        cos_sin = self.cos, self.sin
+
+        music_score_emb = self.music_score_encoder(txt_tokens=txt_tokens, mel2ph=mel2ph, f0=f0, uv=uv, ph_padding_mask=ph_padding_mask, mel_padding_mask=mel_padding_mask) # (B, T, d)
+        time_emb = self.time_emb(t) # (B, d)
+        c = self.time_emb_mlp(time_emb) # (B, d) 
+
+        token_embs = self.input_projection(mel).transpose(-1, -2) # (B, T, d) -- each mel frame corresponds to a d-dimensional embedding vector -- the term "token" is used loosely here
+        x = token_embs + music_score_emb # (B, T, d)
+        # TODO, I could pass x through MLP and nonlinearity if I wanted, but I won't for now
+
+        scale, shift = self.final_ada_ln_proj(c) # 2-tuple of tensors of shape (B, 1, d) 
+
+        attn_mask = torch.logical_not(mel_padding_mask) # (B, T)
+        for block in self.blocks:
+            x = block(x=x, c=c, cos_sin=cos_sin, attn_mask=attn_mask) # (B, T, d)
+        x = F.layer_norm(x, [x.shape[-1]]) * scale + shift # (B, T, d)
+        output = self.output_projection(x).transpose(-1, -2) # (B, M, T)
+
+        return output
