@@ -466,11 +466,11 @@ class DiT(nn.Module):
         self.output_projection = nn.Linear(config['embedding_dim'], config['num_mel_bins'], bias=False)
         self.num_mel_bins = config['num_mel_bins']
 
-        head_dim = config.embed_dim // config['num_attention_heads']
+        head_dim = config['embedding_dim'] // config['num_attention_heads']
         assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
 
         # Note that these rotary embeddings are for mel-frame sequence positions, NOT phoneme sequence positions as in the case of the music score encoder
-        cos, sin = precompute_rotary_embeddings(seq_len=config['max_mel_frames'], head_dim=head_dim, base=config.rotary_base)
+        cos, sin = precompute_rotary_embeddings(seq_len=config['max_mel_frames'], head_dim=head_dim, base=config['rotary_base'])
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
 

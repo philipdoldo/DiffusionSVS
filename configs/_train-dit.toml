@@ -1,0 +1,57 @@
+
+[training]
+data_dir = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s"
+rng_seed = 21 #42#21
+batch_size = 3 #24 # 3
+effective_batch_size = 48
+grad_accum_steps = 1 #2
+training_steps = 160000 # 40000 # 160000
+#resume_training = #true
+#checkpoint_path = #"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/experiments/_train-wavenet-denoiser/06-17-2026-07h53m58s/checkpoints/checkpoint_step100000.pt"
+compute_dtype = "fp16"
+
+val_loss_interval = 100
+val_steps = 4 # 8
+checkpoint_interval = 10000
+save_dir = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/experiments"
+
+AdamW_weight_decay = 0.1 # idk
+AdamW_betas = [0.9, 0.999] # idk
+AdamW_epsilon = 1e-8 # idk
+
+warmup_steps = 10000 #10000 # 5000 # 2000 # idk
+max_lr = 8e-4 #2.5e-3 # idk, based off plot
+min_lr = 3.5e-4 # idk, based off plot
+#use_step_decay = true
+
+ema_decay = 0.9999 #0
+
+[training.diffusion]
+beta_min = 1e-4
+beta_max = 0.06
+T = 100
+k = 100 # the intersection point used in Algorithm 1 of DiffSinger, could use e.g. k=40 or try predicting k
+
+[training.loss]
+l1_weight = 1
+
+[model]
+model_type = "DiT"
+
+pad_token_id = 0 # maybe add a sanity check in training code that it matches with the vocab.json from the dataset that you end up loading
+vocab_size = 60
+
+#dilation_cycle_length = 4 # for wavenet
+#num_wavenet_layers = 20
+sinusoidal_base = 10000
+
+num_mel_bins = 80
+embedding_dim = 256
+
+num_blocks = 6 # for decoder and encoder I guess
+num_attention_heads = 2 # yes, this is what they used
+max_phoneme_seq_len = 512
+max_mel_frames = 8192
+rotary_base = 10000
+
+dropout = 0.1
