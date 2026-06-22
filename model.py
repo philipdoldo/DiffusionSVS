@@ -182,7 +182,7 @@ class PhonemeTextEncoder(nn.Module):
         head_dim = config['embedding_dim'] // config['num_attention_heads']
         assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
 
-        cos, sin = precompute_rotary_embeddings(seq_len=config['max_seq_len'], head_dim=head_dim, base=config['rotary_base'])
+        cos, sin = precompute_rotary_embeddings(seq_len=config['max_phoneme_seq_len'], head_dim=head_dim, base=config['rotary_base'])
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
 
@@ -257,7 +257,7 @@ class AuxiliaryDecoder(nn.Module):
         head_dim = config['embedding_dim'] // config['num_attention_heads']
         assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
 
-        cos, sin = precompute_rotary_embeddings(seq_len=config['max_seq_len'], head_dim=head_dim, base=config['rotary_base'])
+        cos, sin = precompute_rotary_embeddings(seq_len=config['max_mel_frames'], head_dim=head_dim, base=config['rotary_base'])
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
     
@@ -470,7 +470,6 @@ class DiT(nn.Module):
         assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
 
         # Note that these rotary embeddings are for mel-frame sequence positions, NOT phoneme sequence positions as in the case of the music score encoder
-        # TODO change `max_seq_len` in config to `max_phoneme_seq_len`, also test why you used 32k, seems way too long for phonemes! print shapes
         cos, sin = precompute_rotary_embeddings(seq_len=config['max_mel_frames'], head_dim=head_dim, base=config.rotary_base)
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
