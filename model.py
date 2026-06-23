@@ -454,14 +454,14 @@ class DiT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.music_score_encoder = MusicScoreEncoder(config)
-        self.input_projection = Conv1d(in_channels=config['num_mel_bins'], out_channels=config['embedding_dim'], kernel_size=1) # map (B, M, T) to (B, d, T)
+        self.input_projection = nn.Conv1d(in_channels=config['num_mel_bins'], out_channels=config['embedding_dim'], kernel_size=1) # map (B, M, T) to (B, d, T)
         self.time_emb = SinusoidalPositionalEmbedding(embedding_dim=config['embedding_dim'], base=config['sinusoidal_base'])
         self.time_emb_mlp = nn.Sequential(
             nn.Linear(config['embedding_dim'], config['embedding_dim']*4),
             nn.Mish(),
             nn.Linear(config['embedding_dim']*4, config['embedding_dim'])
         ) # copied exactly from WaveNet implementation for now, TODO maybe use MLP class and use config for activation
-        self.blocks = nn.ModuleList([DiTBlock(config) for _ in range(config['num_blocks'])])
+        self.blocks = nn.ModuleList([DiTBlock(config) for _ in range(config['num_dit_blocks'])])
         self.final_ada_ln_proj = AdaLNProjection(embed_dim=config['embedding_dim'], cond_dim=config['embedding_dim'], output_factor=2)
         self.output_projection = nn.Linear(config['embedding_dim'], config['num_mel_bins'], bias=False)
         self.num_mel_bins = config['num_mel_bins']
@@ -485,10 +485,13 @@ class DiT(nn.Module):
 
         music_score_emb = self.music_score_encoder(txt_tokens=txt_tokens, mel2ph=mel2ph, f0=f0, uv=uv, ph_padding_mask=ph_padding_mask, mel_padding_mask=mel_padding_mask) # (B, T, d)
         time_emb = self.time_emb(t) # (B, d)
-        c = self.time_emb_mlp(time_emb) # (B, d) 
+        c = time_emb[:, None, :] + music_score_emb # (B, T, d) -- (B, 1, d) + (B, T, d), time embeddings broadcast
+        c = self.time_emb_mlp(c) # (B, T, d) 
 
-        token_embs = self.input_projection(mel).transpose(-1, -2) # (B, T, d) -- each mel frame corresponds to a d-dimensional embedding vector -- the term "token" is used loosely here
-        x = token_embs + music_score_emb # (B, T, d)
+        x = self.input_projection(mel).transpose(-1, -2) # (B, T, d) -- each mel frame corresponds to a d-dimensional embedding vector -- the term "token" is used loosely here
+        
+        #token_embs = self.input_projection(mel).transpose(-1, -2) # (B, T, d) -- each mel frame corresponds to a d-dimensional embedding vector -- the term "token" is used loosely here
+        ###x = token_embs + music_score_emb # (B, T, d)
         # TODO, I could pass x through MLP and nonlinearity if I wanted, but I won't for now
 
         scale, shift = self.final_ada_ln_proj(c) # 2-tuple of tensors of shape (B, 1, d) 
