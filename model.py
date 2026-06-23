@@ -489,7 +489,8 @@ class DiTBlock(nn.Module):
 
         self.ada_ln_proj = AdaLNProjection(embed_dim=config['embedding_dim'], cond_dim=config['embedding_dim'], output_factor=9)
 
-        self.attn = BidirectionalAttention(config)
+        self.self_attn = BidirectionalAttention(config)
+        self.cross_attn = BidirectionalAttention(config)
         self.mlp = MLP(input_dim=config['embedding_dim'], hidden_dim=4*config['embedding_dim'], output_dim=config['embedding_dim'])
 
     def forward(self, x, c, cos_sin, attn_mask, x_kv):
@@ -506,9 +507,9 @@ class DiTBlock(nn.Module):
         scale1, shift1, gate1, scale2, shift2, gate2, scale3, shift3, gate3 = self.ada_ln_proj(c)
         assert x_kv is not None, f"{x_kv=}"
 
-        x = x + gate1 * self.attn( x=F.layer_norm(x, [x.shape[-1]]) * scale1 + shift1, cos_sin=cos_sin, attn_mask=attn_mask ) # I think F.layer_norm should automatically cast to fp32 when using torch.amp.autocast based on https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/autocast_mode.cpp#L274
-        x = x + gate2 * self.attn( x=F.layer_norm(x, [x.shape[-1]]) * scale2 + shift2, cos_sin=cos_sin, attn_mask=attn_mask, x_kv=x_kv ) # cross attention
-        x = x + gate3 * self.mlp( F.layer_norm(x, [x.shape[-1]]) * scale3 + shift3 )
+        x = x + gate1 * self.self_attn( x_q=F.layer_norm(x, [x.shape[-1]]) * scale1 + shift1, cos_sin=cos_sin, attn_mask=attn_mask ) # I think F.layer_norm should automatically cast to fp32 when using torch.amp.autocast based on https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/autocast_mode.cpp#L274
+        x = x + gate2 * self.cross_attn( x_q=F.layer_norm(x, [x.shape[-1]]) * scale2 + shift2, cos_sin=cos_sin, attn_mask=attn_mask, x_kv=x_kv ) # cross attention
+        x = x + gate3 * self.mlp( F.layer_norm(x, [x.shape[-1]]) * scale3 + shift3 ) # TODO input has shape (B, l_q, d), masking not taken into account when 1) computing layer norm (same in the previous two attention lines) and 2) when computing the MLP
         return x
     
 class DiT(nn.Module):
