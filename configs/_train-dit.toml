@@ -9,6 +9,8 @@ training_steps = 160000 # 40000 # 160000
 #resume_training = #true
 #checkpoint_path = #"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/experiments/_train-wavenet-denoiser/06-17-2026-07h53m58s/checkpoints/checkpoint_step100000.pt"
 compute_dtype = "fp16"
+use_torch_compile = true
+torch_compile_dynamic = 'none'
 
 val_loss_interval = 100
 val_steps = 4 # 8
@@ -49,7 +51,8 @@ num_mel_bins = 80
 embedding_dim = 256
 
 num_blocks = 6 # for decoder and encoder I guess
-num_attention_heads = 2 # yes, this is what they used
+num_dit_blocks = 12
+num_attention_heads = 8 #2 # yes, 2 is what they used
 max_phoneme_seq_len = 512
 max_mel_frames = 8192
 rotary_base = 10000

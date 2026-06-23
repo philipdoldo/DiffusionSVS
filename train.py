@@ -13,6 +13,8 @@ from model import MusicScoreEncoder, AuxiliaryDecoder, WaveNet, EncoderDecoder, 
 from exponential_moving_average import ExponentialMovingAverage
 from data.dataloader import NaiveDataLoader
 from loss_functions import get_loss_function
+import torch._dynamo
+torch._dynamo.config.cache_size_limit = 64
 
 """
 TODO:
@@ -332,6 +334,16 @@ if __name__ == "__main__":
     model = model.to(device)
     if ddp:
         model = DDP(model, device_ids=[local_rank])
+    
+    if config['training'].get('use_torch_compile', False):
+        dynamic = config['training'].get('torch_compile_dynamic', False)
+        if type(dynamic) is not bool:
+            if dynamic == "none":
+                dynamic = None
+            else:
+                raise ValueError(f"`dynamic` should be either `true`, `false`, or `'none'` in the config, got {dynamic=}")
+        model = torch.compile(model, dynamic=dynamic)
+        write0(f"Using torch.compile with {dynamic=}\n", log_file=log_file)
 
     num_params = sum(p.numel() for p in model.parameters())
     num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -479,7 +491,7 @@ if __name__ == "__main__":
                 torch.set_rng_state(rng_state) # restore rng state on rank 0
                 model.train()
                 if model_config.get("freeze_encoder", True) and model_config["model_type"] == "WaveNetDenoiser":
-                    model.module.encoder.eval() if isinstance(model, DDP) else model.encoder.eval() # keep the frozen encoder in eval to ignore dropout
+                    model.module.encoder.eval() if ddp else model.encoder.eval() # keep the frozen encoder in eval to ignore dropout
                 t1 = time.time()
                 computed_val_loss_this_iteration = True
                 write0(f"val loss: {val_loss}{' '*(8 - len(str(step)))}{(t1-t0)*1000:.0f}ms\n", log_file=log_file)
