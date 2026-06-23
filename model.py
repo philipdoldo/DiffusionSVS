@@ -138,6 +138,64 @@ class BidirectionalSelfAttention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, embed_dim)
         return self.Wo(y)
 
+# TODO remove BidirectionalSelfAttention class
+class BidirectionalAttention(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.Wq = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
+        self.Wk = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
+        self.Wv = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
+        self.Wo = nn.Linear(config['embedding_dim'], config['embedding_dim'], bias=False)
+
+        self.num_heads = config['num_attention_heads']
+        self.embed_dim = config['embedding_dim']
+
+    def forward(self, x_q, cos_sin, attn_mask, x_kv=None):
+        """
+        `x_q` has shape (B, l_q, d)
+        `attn_mask` has shape (B, l_k) and is True for entries that should take part in attention and False otherwise
+            it is worth noting that we only care about masking columns of the attention matrix (Q @ K^T) as the rows
+            are computed independently and thus rows corresponding to padding tokens can be ignored
+        `x_kv` has shape (B, l_k, d) if it isn't None
+
+        B: batch size
+        l_q: query sequence length
+        l_k: key sequence length
+        d: embedding dimension
+        
+        In the case of our diffusion transformer (DiT), we'll have l_q = l_k = T (number of mel frames)
+        """
+        B, l_q, d = x_q.shape
+        q = self.Wq(x_q) # (B, l_q, d)
+
+        if x_kv is None:
+            l_k = l_q # self-attention case
+            k, v = self.Wk(x_q), self.Wv(x_q) # (B, l_k, d)
+        else:
+            l_k = x_kv.shape[1] # cross-attention case
+            k, v = self.Wk(x_kv), self.Wv(x_kv) # (B, l_k, d)
+
+        head_dim = d // self.num_heads
+        assert self.num_heads * head_dim == d, f"{self.num_heads=}, {head_dim=}, {d=}"
+
+        q = q.view(B, l_q, self.num_heads, head_dim) # (B, l_q, num_heads, head_dim)
+        k = k.view(B, l_k, self.num_heads, head_dim) # (B, l_k, num_heads, head_dim)
+        v = v.view(B, l_k, self.num_heads, head_dim) # (B, l_k, num_heads, head_dim)
+
+        # Apply Rotary Embeddings to queries and keys to get relative positional encoding
+        cos, sin = cos_sin
+        q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin) # QK rotary embedding
+        q, k = rmsnorm(q), rmsnorm(k) # QK norm
+        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2) # make head be batch dim, e.g. (B, l_q, num_heads, head_dim) -> (B, num_heads, l_q, head_dim)
+
+        # att = q @ k.transpose(-2, -1) * (1.0 / math.sqrt(k.shape[-1])) # (B, num_heads, l_q, l_k)
+        # att = F.softmax(att, dim=-1)
+        # y = att @ v # (B, num_heads, l_q, l_k) x (B, num_heads, l_k, head_dim) -> (B, num_heads, l_q, head_dim)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=False, attn_mask=attn_mask[:, None, None, :]) # attn mask needs to broadcast with the tensor of attention matrices which has shape (B, num_heads, l_q, l_k)
+        y = y.transpose(1, 2).contiguous().view(B, l_q, d)
+        return self.Wo(y)
+
 class MLP(nn.Module):
 
     def __init__(self, input_dim, hidden_dim=None, output_dim=None, bias=False):
@@ -396,7 +454,8 @@ class WaveNetDenoiser(nn.Module):
 
 class AdaLNProjection(nn.Module):
     """
-    generates the 6 scale/shift/gates from adaLN-Zero, see DiT paper https://arxiv.org/pdf/2212.09748 
+    (typically) generates the 6 scale/shift/gates from adaLN-Zero, see DiT paper https://arxiv.org/pdf/2212.09748 
+    I'll actually use 9 when doing cross attention in the DiTBlock
 
     scales: gamma1, gamma2 in DiT paper
     shifts: beta1, beta2 in DiT paper
@@ -428,12 +487,12 @@ class DiTBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        self.ada_ln_proj = AdaLNProjection(embed_dim=config['embedding_dim'], cond_dim=config['embedding_dim'])
+        self.ada_ln_proj = AdaLNProjection(embed_dim=config['embedding_dim'], cond_dim=config['embedding_dim'], output_factor=9)
 
-        self.attn = BidirectionalSelfAttention(config)
+        self.attn = BidirectionalAttention(config)
         self.mlp = MLP(input_dim=config['embedding_dim'], hidden_dim=4*config['embedding_dim'], output_dim=config['embedding_dim'])
 
-    def forward(self, x, c, cos_sin, attn_mask):
+    def forward(self, x, c, cos_sin, attn_mask, x_kv):
         """
         `x` has shape (B, L, d) where B is batch size, L is sequence length, and d is embedding dimension
             this is basically a tensor containing sequences of token embeddings -- in our case L = T, that
@@ -442,11 +501,14 @@ class DiTBlock(nn.Module):
             embedding (e.g. time embedding passed through MLP) that gets passed into the DiT block in 
             Figure 3 of the DiT paper https://arxiv.org/abs/2212.09748
         `attn_mask` has shape (batch_size, seq_len) and is True for entries that should take part in attention and False otherwise -- seq_len = T in our case
+        `x_kv` has shape (B, L_k, d) where L_k is the key sequence length -- in practice this will just be T and x_kv will be the outputs of the music score encoder
         """
-        scale1, shift1, gate1, scale2, shift2, gate2 = self.ada_ln_proj(c)
+        scale1, shift1, gate1, scale2, shift2, gate2, scale3, shift3, gate3 = self.ada_ln_proj(c)
+        assert x_kv is not None, f"{x_kv=}"
 
         x = x + gate1 * self.attn( x=F.layer_norm(x, [x.shape[-1]]) * scale1 + shift1, cos_sin=cos_sin, attn_mask=attn_mask ) # I think F.layer_norm should automatically cast to fp32 when using torch.amp.autocast based on https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/autocast_mode.cpp#L274
-        x = x + gate2 * self.mlp( F.layer_norm(x, [x.shape[-1]]) * scale2 + shift2 )
+        x = x + gate2 * self.attn( x=F.layer_norm(x, [x.shape[-1]]) * scale2 + shift2, cos_sin=cos_sin, attn_mask=attn_mask, x_kv=x_kv ) # cross attention
+        x = x + gate3 * self.mlp( F.layer_norm(x, [x.shape[-1]]) * scale3 + shift3 )
         return x
     
 class DiT(nn.Module):
@@ -476,7 +538,7 @@ class DiT(nn.Module):
 
     def forward(self, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, mel, t):
         """
-        The time embedding gets treated as the conditional embedding. The music score embeddings
+        The time embedding gets treated as the conditional embedding. The music score embeddings are used during cross attention.
         """
         B, M, T = mel.shape 
         if M != self.num_mel_bins:
@@ -485,20 +547,15 @@ class DiT(nn.Module):
 
         music_score_emb = self.music_score_encoder(txt_tokens=txt_tokens, mel2ph=mel2ph, f0=f0, uv=uv, ph_padding_mask=ph_padding_mask, mel_padding_mask=mel_padding_mask) # (B, T, d)
         time_emb = self.time_emb(t) # (B, d)
-        c = time_emb[:, None, :] + music_score_emb # (B, T, d) -- (B, 1, d) + (B, T, d), time embeddings broadcast
-        c = self.time_emb_mlp(c) # (B, T, d) 
+        c = self.time_emb_mlp(time_emb) # (B, d) 
 
-        x = self.input_projection(mel).transpose(-1, -2) # (B, T, d) -- each mel frame corresponds to a d-dimensional embedding vector -- the term "token" is used loosely here
-        
-        #token_embs = self.input_projection(mel).transpose(-1, -2) # (B, T, d) -- each mel frame corresponds to a d-dimensional embedding vector -- the term "token" is used loosely here
-        ###x = token_embs + music_score_emb # (B, T, d)
-        # TODO, I could pass x through MLP and nonlinearity if I wanted, but I won't for now
+        x = self.input_projection(mel).transpose(-1, -2) # (B, T, d) -- each mel frame corresponds to a d-dimensional embedding vector (projection maps M to d)
 
         scale, shift = self.final_ada_ln_proj(c) # 2-tuple of tensors of shape (B, 1, d) 
 
         attn_mask = torch.logical_not(mel_padding_mask) # (B, T)
         for block in self.blocks:
-            x = block(x=x, c=c, cos_sin=cos_sin, attn_mask=attn_mask) # (B, T, d)
+            x = block(x=x, c=c, cos_sin=cos_sin, attn_mask=attn_mask, x_kv=music_score_emb) # (B, T, d)
         x = F.layer_norm(x, [x.shape[-1]]) * scale + shift # (B, T, d)
         output = self.output_projection(x).transpose(-1, -2) # (B, M, T)
 
