@@ -509,7 +509,7 @@ class DiTBlock(nn.Module):
 
         x = x + gate1 * self.self_attn( x_q=F.layer_norm(x, [x.shape[-1]]) * scale1 + shift1, cos_sin=cos_sin, attn_mask=attn_mask ) # I think F.layer_norm should automatically cast to fp32 when using torch.amp.autocast based on https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/autocast_mode.cpp#L274
         x = x + gate2 * self.cross_attn( x_q=F.layer_norm(x, [x.shape[-1]]) * scale2 + shift2, cos_sin=cos_sin, attn_mask=attn_mask, x_kv=x_kv ) # cross attention
-        x = x + gate3 * self.mlp( F.layer_norm(x, [x.shape[-1]]) * scale3 + shift3 ) # TODO input has shape (B, l_q, d), masking not taken into account when 1) computing layer norm (same in the previous two attention lines) and 2) when computing the MLP
+        x = x + gate3 * self.mlp( F.layer_norm(x, [x.shape[-1]]) * scale3 + shift3 )
         return x
     
 class DiT(nn.Module):
