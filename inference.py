@@ -6,48 +6,79 @@ import torch
 import numpy as np
 import h5py
 import toml
+import argparse
 import soundfile as sf
+from pathlib import Path
 from modules.hifigan.hifigan import HifiGanGenerator
 from data.dataloader import NaiveDataLoader
-from model import WaveNetDenoiser
+from model import WaveNetDenoiser, DiT
 from train import DiffusionProcess
 from exponential_moving_average import ExponentialMovingAverage
 
 if __name__ == "__main__":
 
-    CKPT_PATH   = "third_party/DiffSinger-vocoder/model_ckpt_steps_280000.ckpt" # checkpoint from the .zip file downloaded
-    CONFIG_PATH = "third_party/DiffSinger-vocoder/config.yaml" # config from the .zip file downloaded
+    parser = argparse.ArgumentParser(description="Plot training/validation loss from a CSV log.")
+    parser.add_argument("checkpoint", help="Path to denoiser checkpoint")
+    parser.add_argument("--ema", action=argparse.BooleanOptionalAction, default=True, help="Whether or not to use EMA weights")
+    parser.add_argument("--config", type=str, default=None)
+
+    args = parser.parse_args()
+
+    VOCODER_CHECKPOINT_PATH   = "third_party/DiffSinger-vocoder/model_ckpt_steps_280000.ckpt" # checkpoint from the .zip file downloaded
+    VOCODER_CONFIG_PATH = "third_party/DiffSinger-vocoder/config.yaml" # config from the .zip file downloaded
     TEST_H5     = "/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/test.h5"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/test.h5"##"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-13-2026-19h51m02s/test.h5"
-    OUTPUT_PATH = "_output/inference_output0-ok4-160k-bugfix.wav"
+    TRAIN_STATS_PATH = "/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/train_stats.npz"
+    #OUTPUT_PATH = "_output/inference_output0-ok10-160k-dit-ema.wav"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    with open(CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
+    with open(VOCODER_CONFIG_PATH) as f:
+        vocoder_config = yaml.safe_load(f)
 
-    ckpt = torch.load(CKPT_PATH, map_location=device)
-    vocoder = HifiGanGenerator(config)
-    vocoder.load_state_dict(ckpt["state_dict"]["model_gen"], strict=True)
+    vocoder_checkpoint = torch.load(VOCODER_CHECKPOINT_PATH, map_location=device)
+    vocoder = HifiGanGenerator(vocoder_config)
+    vocoder.load_state_dict(vocoder_checkpoint["state_dict"]["model_gen"], strict=True)
     vocoder.remove_weight_norm()
     vocoder.eval().to(device)
 
-    denoiser_checkpoint_path = "/home/phil/DiffusionSVS/experiments/copied/checkpoint_step159999.pt"#"/home/phil/DiffusionSVS/experiments/copied/ok1/checkpoint_step159999.pt"#"/home/phil/DiffusionSVS/experiments/copied/checkpoint_step159999.pt" #"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/experiments/_train-wavenet-denoiser/06-15-2026-16h33m52s/checkpoints/checkpoint_step159999.pt"
+    denoiser_checkpoint_path = Path(args.checkpoint)
+    output_dir = denoiser_checkpoint_path.parent
+    if args.config is None:
+        denoiser_config_path = output_dir / "config.toml"
+    else:
+        denoiser_config_path = args.config
+    print(f"  LOADING DENOISER CHECKPOINT: {denoiser_checkpoint_path}")
+    print(f"  USING DENOISER CONFIG: {denoiser_config_path}")
+
     denoiser_checkpoint = torch.load(denoiser_checkpoint_path, map_location=device)
-    denoiser_config_path = "/home/phil/DiffusionSVS/experiments/copied/ok4/config.toml"#"/home/phil/DiffusionSVS/experiments/copied/ok1/config.toml"#"/home/phil/DiffusionSVS/experiments/copied/config.toml" #"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/experiments/_train-wavenet-denoiser/06-15-2026-16h33m52s/config.toml"
     with open(denoiser_config_path, "r") as f:
         denoiser_config = toml.load(f)
-    denoiser = WaveNetDenoiser(denoiser_config['model'])
+    
+    model_type = denoiser_config['model']['model_type'] 
+    if model_type == "DiT":
+        model_class = DiT
+    elif model_type == "WaveNetDenoiser":
+        model_class = WaveNetDenoiser
+    else:
+        raise ValueError(f"{model_type=}")
+    denoiser = model_class(denoiser_config['model'])
     denoiser.load_state_dict(denoiser_checkpoint['model'])
     denoiser.eval().to(device)
 
-    train_stats_path = "/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/train_stats.npz"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/train_stats.npz" #"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s/train_stats.npz"
-    stats = np.load(train_stats_path)
-    test_loader = NaiveDataLoader(data_path=TEST_H5, batch_size=1, padding_value=0, rng_seed=21, diffusion_k=100, stats_path=train_stats_path)
+    if args.ema:
+        ema = ExponentialMovingAverage(params=denoiser.parameters(), decay=denoiser_config["training"]["ema_decay"])
+        ema.load_state_dict(denoiser_checkpoint["ema"], device=device)
+        ema.store(denoiser.parameters()) # store copy of the actual model weights
+        ema.copy_to(denoiser.parameters()) # copy EMA weights into the model
+
+    #"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/train_stats.npz" #"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s/train_stats.npz"
+    stats = np.load(TRAIN_STATS_PATH)
+    test_loader = NaiveDataLoader(data_path=TEST_H5, batch_size=1, padding_value=0, rng_seed=21, diffusion_k=100, stats_path=TRAIN_STATS_PATH)
 
     batch = test_loader.next_batch(device) # maybe create dummy .h5 of just a single example
 
-    beta_min = 1e-4
-    beta_max = 0.06
+    beta_min = denoiser_config['training']['diffusion']['beta_min']#1e-4
+    beta_max = denoiser_config['training']['diffusion']['beta_max']#0.06
     diffusion = DiffusionProcess(
             beta_min=beta_min, 
             beta_max=beta_max, 
@@ -89,10 +120,15 @@ if __name__ == "__main__":
     #mel_tensor = torch.clamp(mel_tensor, min=-6, max=1.5)
 
     with torch.no_grad():
-        print(f"{mel.min()=}, {mel.max()=}, {mel.mean()=}") 
+        print(f"    {mel.min()=}, {mel.max()=}, {mel.mean()=}") 
         # mel values should be in [-6, 1.5] because in config.yaml they define `mel_vmin: -6` and `mel_vmax: 1.5`
         audio = vocoder(mel_tensor, f0_tensor).view(-1)
 
     audio = audio.cpu().numpy()
-    sf.write(OUTPUT_PATH, audio, samplerate=config["audio_sample_rate"])
-    print(f"wrote {OUTPUT_PATH}")
+    output_name = f"OUTPUT-{denoiser_checkpoint_path.stem}-{model_type}"
+    if args.ema:
+        output_name += f"-EMA"
+    output_name += ".wav"
+    output_path = output_dir / output_name
+    sf.write(output_path, audio, samplerate=vocoder_config["audio_sample_rate"])
+    print(f"wrote {output_path}")
