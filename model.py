@@ -507,9 +507,9 @@ class DiTBlock(nn.Module):
         scale1, shift1, gate1, scale2, shift2, gate2, scale3, shift3, gate3 = self.ada_ln_proj(c)
         assert x_kv is not None, f"{x_kv=}"
 
-        x = x + gate1 * self.self_attn( x_q=F.layer_norm(x, [x.shape[-1]]) * scale1 + shift1, cos_sin=cos_sin, attn_mask=attn_mask ) # I think F.layer_norm should automatically cast to fp32 when using torch.amp.autocast based on https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/autocast_mode.cpp#L274
-        x = x + gate2 * self.cross_attn( x_q=F.layer_norm(x, [x.shape[-1]]) * scale2 + shift2, cos_sin=cos_sin, attn_mask=attn_mask, x_kv=x_kv ) # cross attention
-        x = x + gate3 * self.mlp( F.layer_norm(x, [x.shape[-1]]) * scale3 + shift3 )
+        x = x + gate1 * self.self_attn( x_q=F.layer_norm(x, [x.shape[-1]]) * (1 + scale1) + shift1, cos_sin=cos_sin, attn_mask=attn_mask ) # I think F.layer_norm should automatically cast to fp32 when using torch.amp.autocast based on https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/autocast_mode.cpp#L274
+        x = x + gate2 * self.cross_attn( x_q=F.layer_norm(x, [x.shape[-1]]) * (1 + scale2) + shift2, cos_sin=cos_sin, attn_mask=attn_mask, x_kv=x_kv ) # cross attention
+        x = x + gate3 * self.mlp( F.layer_norm(x, [x.shape[-1]]) * (1 + scale3) + shift3 )
         return x
     
 class DiT(nn.Module):
@@ -557,7 +557,7 @@ class DiT(nn.Module):
         attn_mask = torch.logical_not(mel_padding_mask) # (B, T)
         for block in self.blocks:
             x = block(x=x, c=c, cos_sin=cos_sin, attn_mask=attn_mask, x_kv=music_score_emb) # (B, T, d)
-        x = F.layer_norm(x, [x.shape[-1]]) * scale + shift # (B, T, d)
+        x = F.layer_norm(x, [x.shape[-1]]) * (1 + scale) + shift # (B, T, d)
         output = self.output_projection(x).transpose(-1, -2) # (B, M, T)
 
         return output
