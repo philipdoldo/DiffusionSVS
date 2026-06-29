@@ -74,12 +74,16 @@ if __name__ == "__main__":
 
     #"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/train_stats.npz" #"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s/train_stats.npz"
     stats = np.load(TRAIN_STATS_PATH)
-    test_loader = NaiveDataLoader(data_path=TEST_H5, batch_size=1, padding_value=0, rng_seed=21, diffusion_k=100, stats_path=TRAIN_STATS_PATH)
-
-    batch = test_loader.next_batch(device) # maybe create dummy .h5 of just a single example
 
     diffusion_type = denoiser_config['training']['diffusion'].get('diffusion_type', 'DiffSingerDiffusion')
+    diffusion_k = denoiser_config['training']['diffusion'].get('k')
     print(f"\n     ----- USING {diffusion_type=} -----\n")
+    print(f"{diffusion_k=}")
+    test_loader = NaiveDataLoader(data_path=TEST_H5, batch_size=1, padding_value=0, rng_seed=21, diffusion_k=diffusion_k, stats_path=TRAIN_STATS_PATH, diffusion_type=diffusion_type)
+
+    batch = test_loader.next_batch(device) # maybe create dummy .h5 of just a single example
+    
+    use_num_iter = False
     if diffusion_type == "DiffSingerDiffusion":
         beta_min = denoiser_config['training']['diffusion']['beta_min']#1e-4
         beta_max = denoiser_config['training']['diffusion']['beta_max']#0.06
@@ -97,9 +101,10 @@ if __name__ == "__main__":
             uv=batch['uv'], 
             ph_padding_mask=batch['ph_padding_mask'], 
             mel_padding_mask=batch['mel_padding_mask'],
-            M=80
+            M=80,
             )
     elif diffusion_type == "SimpleFlow":
+        use_num_iter = True
         print(f" --- using {args.num_iter=} sampling iterations")
         diffusion = SimpleFlow(device=device)
         mel = diffusion.sample(
@@ -110,8 +115,8 @@ if __name__ == "__main__":
             uv=batch['uv'], 
             ph_padding_mask=batch['ph_padding_mask'], 
             mel_padding_mask=batch['mel_padding_mask'],
-            M=80
-            num_iter=args.num_iter
+            M=80,
+            num_iter=args.num_iter,
             )
         
     
@@ -146,6 +151,8 @@ if __name__ == "__main__":
     output_name = f"OUTPUT-{denoiser_checkpoint_path.stem}-{model_type}"
     if args.ema:
         output_name += f"-EMA"
+    if use_num_iter:
+        output_name += f"-N={args.num_iter}"
     output_name += ".wav"
     output_path = output_dir / output_name
     sf.write(output_path, audio, samplerate=vocoder_config["audio_sample_rate"])
