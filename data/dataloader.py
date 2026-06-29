@@ -69,8 +69,8 @@ class NaiveDataLoader:
     `diffusion_k` is the integer value from Algorithm 1 of DiffSinger such that we sample random timesteps from the set {1, ..., k} during training if doing diffusion. If
     `diffusion_k` is None, then we do not do diffusion (as in DiffSinger).
     
-    `diffusion_k` should only not be None if using setting `noise_type` to be `"DiffSingerDiffusion"`, other noise types change the data we load. For example, setting
-    `noise_type` to `SimpleFlow` will cause the dataloader to load batches of times `t` in [0,1] rather than integer times in {1, ..., diffusion_k} as in DiffSingerDiffusion
+    `diffusion_k` should only not be None if using setting `diffusion_type` to be `"DiffSingerDiffusion"`, other noise types change the data we load. For example, setting
+    `diffusion_type` to `SimpleFlow` will cause the dataloader to load batches of times `t` in [0,1] rather than integer times in {1, ..., diffusion_k} as in DiffSingerDiffusion
     """
 
     def __init__(
@@ -83,7 +83,7 @@ class NaiveDataLoader:
         collate_fn: callable = pad_and_norm_collate_fn,
         diffusion_k: int = None,
         stats_path: str = None, # .npz files
-        noise_type: str = None,
+        diffusion_type: str = None,
     ):
         self.data_path = data_path
         with h5py.File(data_path, "r") as f:
@@ -93,20 +93,20 @@ class NaiveDataLoader:
         self.prefetch_batches = prefetch_batches
         self.collate_fn = collate_fn
         self.diffusion_k = diffusion_k
-        self.noise_type = noise_type
+        self.diffusion_type = diffusion_type
 
-        ##### Validate that the inputted noise_type is consistent with other input arguments
+        ##### Validate that the inputted diffusion_type is consistent with other input arguments
         self.DIFF_SINGER_DIFFUSION = "DiffSingerDiffusion"
         self.SIMPLE_FLOW = "SimpleFlow"
-        self.VALID_NOISE_TYPES = {self.DIFF_SINGER_DIFFUSION, self.SIMPLE_FLOW, None}
-        if self.noise_type not in self.VALID_NOISE_TYPES:
-            raise ValueError(f"`noise_type` must be in {self.VALID_NOISE_TYPES}, but got {self.noise_type=}")
-        if self.noise_type == "DiffSingerDiffusion":
+        self.VALID_diffusion_typeS = {self.DIFF_SINGER_DIFFUSION, self.SIMPLE_FLOW, None}
+        if self.diffusion_type not in self.VALID_diffusion_typeS:
+            raise ValueError(f"`diffusion_type` must be in {self.VALID_diffusion_typeS}, but got {self.diffusion_type=}")
+        if self.diffusion_type == "DiffSingerDiffusion":
             if self.diffusion_k is None:
-                raise ValueError(f"if using {self.noise_type=}, then must set `diffusion_k` to an approriate integer, e.g. 100")
+                raise ValueError(f"if using {self.diffusion_type=}, then must set `diffusion_k` to an approriate integer, e.g. 100")
         else:
             if self.diffusion_k is not None:
-                raise ValueError(f"if using {self.noise_type=}, then must set `diffusion_k` to be `None`, but got {self.diffusion_k=}")
+                raise ValueError(f"if using {self.diffusion_type=}, then must set `diffusion_k` to be `None`, but got {self.diffusion_k=}")
         #####
 
         if dist.is_available() and dist.is_initialized():
@@ -151,7 +151,7 @@ class NaiveDataLoader:
             'txt_tokens' : [],
         }
 
-        if self.noise_type is not None:
+        if self.diffusion_type is not None:
             batch['epsilon'] = []
 
         with h5py.File(self.data_path, "r") as f:
@@ -167,7 +167,7 @@ class NaiveDataLoader:
                 batch['mel2ph'].append(_mel2ph)
                 batch['uv'].append(_uv)
                 batch['txt_tokens'].append(_txt_tokens)
-                if self.noise_type is not None:
+                if self.diffusion_type is not None:
                     batch['epsilon'].append(torch.randn_like(_mel))
 
         self.current_position += self.batch_size * self.world_size
@@ -175,10 +175,10 @@ class NaiveDataLoader:
             self.reset()
 
         if self.diffusion_k is not None:
-            assert self.noise_type == self.DIFF_SINGER_DIFFUSION, f"{self.noise_type=}"
+            assert self.diffusion_type == self.DIFF_SINGER_DIFFUSION, f"{self.diffusion_type=}"
             t = torch.randint(1, self.diffusion_k+1, size=(self.batch_size,)) # batch of random integers in {1, ..., k}
             batch['t'] = t
-        elif self.noise_type == self.SIMPLE_FLOW:
+        elif self.diffusion_type == self.SIMPLE_FLOW:
             t = torch.rand(size=(self.batch_size,)) # batch of random times in [0, 1]
             batch['t'] = t
 

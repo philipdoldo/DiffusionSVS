@@ -26,7 +26,7 @@ class SimpleFlow:
         `epsilon` has shape (B, M, T) and is isotropic gaussian noise
         `t` has shape (B,) and is a batch of times in [0,1]
         """
-        if not torch.all( t >= 0 or t <= 1):
+        if not torch.all( torch.logical_and(t >= 0, t <= 1)):
             raise ValueError(f"times should be in [0,1] but got {t.min()=}, {t.max()=}, {t=}")
         t = t[:, None, None] # (B, 1, 1)
         interpolant = t * mel + (1-t) * epsilon # at t=0, we have pure noise, at t=1 pure data
@@ -517,7 +517,7 @@ if __name__ == "__main__":
 
                             val_interpolant = diffusion.get_interpolant(mel=val_ground_truth_mel, epsilon=val_batch['epsilon'], t=val_batch['t'])
                             if type(diffusion) == DiffSingerDiffusion:
-                                val_target = val_batch['epsilon'],
+                                val_target = val_batch['epsilon']
                             elif type(diffusion) == SimpleFlow:
                                 val_target = val_ground_truth_mel - val_batch['epsilon']
 
@@ -580,7 +580,7 @@ if __name__ == "__main__":
 
                     interpolant = diffusion.get_interpolant(mel=ground_truth_mel, epsilon=batch['epsilon'], t=batch['t'])
                     if type(diffusion) == DiffSingerDiffusion:
-                        target = batch['epsilon'],
+                        target = batch['epsilon']
                     elif type(diffusion) == SimpleFlow:
                         target = ground_truth_mel - batch['epsilon']
 

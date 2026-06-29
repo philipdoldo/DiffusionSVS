@@ -25,10 +25,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    VOCODER_CHECKPOINT_PATH   = "third_party/DiffSinger-vocoder/model_ckpt_steps_280000.ckpt" # checkpoint from the .zip file downloaded
+    VOCODER_CHECKPOINT_PATH = "third_party/DiffSinger-vocoder/model_ckpt_steps_280000.ckpt" # checkpoint from the .zip file downloaded
     VOCODER_CONFIG_PATH = "third_party/DiffSinger-vocoder/config.yaml" # config from the .zip file downloaded
-    TEST_H5     = "/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/test.h5"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/test.h5"##"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-13-2026-19h51m02s/test.h5"
-    TRAIN_STATS_PATH = "/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/train_stats.npz"
+    TEST_H5 = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s/test.h5"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/test.h5"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/test.h5"##"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-13-2026-19h51m02s/test.h5"
+    TRAIN_STATS_PATH = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s/train_stats.npz"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/train_stats.npz"
     #OUTPUT_PATH = "_output/inference_output0-ok10-160k-dit-ema.wav"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -78,7 +78,8 @@ if __name__ == "__main__":
 
     batch = test_loader.next_batch(device) # maybe create dummy .h5 of just a single example
 
-    diffusion_type = denoiser_config['training']['diffusion']['diffusion_type']
+    diffusion_type = denoiser_config['training']['diffusion'].get('diffusion_type', 'DiffSingerDiffusion')
+    print(f"\n     ----- USING {diffusion_type=} -----\n")
     if diffusion_type == "DiffSingerDiffusion":
         beta_min = denoiser_config['training']['diffusion']['beta_min']#1e-4
         beta_max = denoiser_config['training']['diffusion']['beta_max']#0.06
