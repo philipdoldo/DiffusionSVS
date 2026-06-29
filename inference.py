@@ -12,7 +12,7 @@ from pathlib import Path
 from modules.hifigan.hifigan import HifiGanGenerator
 from data.dataloader import NaiveDataLoader
 from model import WaveNetDenoiser, DiT
-from train import DiffusionProcess
+from train import DiffSingerDiffusion, SimpleFlow
 from exponential_moving_average import ExponentialMovingAverage
 
 if __name__ == "__main__":
@@ -21,6 +21,7 @@ if __name__ == "__main__":
     parser.add_argument("checkpoint", help="Path to denoiser checkpoint")
     parser.add_argument("--ema", action=argparse.BooleanOptionalAction, default=True, help="Whether or not to use EMA weights")
     parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--num_iter", type=int, default=100)
 
     args = parser.parse_args()
 
@@ -77,25 +78,41 @@ if __name__ == "__main__":
 
     batch = test_loader.next_batch(device) # maybe create dummy .h5 of just a single example
 
-    beta_min = denoiser_config['training']['diffusion']['beta_min']#1e-4
-    beta_max = denoiser_config['training']['diffusion']['beta_max']#0.06
-    diffusion = DiffusionProcess(
-            beta_min=beta_min, 
-            beta_max=beta_max, 
-            T=100,
-            device=device
+    diffusion_type = denoiser_config['training']['diffusion']['diffusion_type']
+    if diffusion_type == "DiffSingerDiffusion":
+        beta_min = denoiser_config['training']['diffusion']['beta_min']#1e-4
+        beta_max = denoiser_config['training']['diffusion']['beta_max']#0.06
+        diffusion = DiffSingerDiffusion(
+                beta_min=beta_min, 
+                beta_max=beta_max, 
+                T=100,
+                device=device
+                )
+        mel = diffusion.sample(
+            model=denoiser, 
+            txt_tokens=batch['txt_tokens'], 
+            mel2ph=batch['mel2ph'], 
+            f0=batch['f0'], 
+            uv=batch['uv'], 
+            ph_padding_mask=batch['ph_padding_mask'], 
+            mel_padding_mask=batch['mel_padding_mask'],
+            M=80
             )
-    
-    mel = diffusion.sample(
-        model=denoiser, 
-        txt_tokens=batch['txt_tokens'], 
-        mel2ph=batch['mel2ph'], 
-        f0=batch['f0'], 
-        uv=batch['uv'], 
-        ph_padding_mask=batch['ph_padding_mask'], 
-        mel_padding_mask=batch['mel_padding_mask'],
-        M=80
-        )
+    elif diffusion_type == "SimpleFlow":
+        print(f" --- using {args.num_iter=} sampling iterations")
+        diffusion = SimpleFlow(device=device)
+        mel = diffusion.sample(
+            model=denoiser, 
+            txt_tokens=batch['txt_tokens'], 
+            mel2ph=batch['mel2ph'], 
+            f0=batch['f0'], 
+            uv=batch['uv'], 
+            ph_padding_mask=batch['ph_padding_mask'], 
+            mel_padding_mask=batch['mel_padding_mask'],
+            M=80
+            num_iter=args.num_iter
+            )
+        
     
     print(f"[0] {mel.shape=}")
     
