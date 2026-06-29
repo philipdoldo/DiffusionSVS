@@ -67,7 +67,10 @@ class NaiveDataLoader:
     before saving state so that no batches are skipped or repeated on resume.
 
     `diffusion_k` is the integer value from Algorithm 1 of DiffSinger such that we sample random timesteps from the set {1, ..., k} during training if doing diffusion. If
-    `diffusion_k` is None, then we do not do diffusion.
+    `diffusion_k` is None, then we do not do diffusion (as in DiffSinger).
+    
+    `diffusion_k` should only not be None if using setting `noise_type` to be `"DiffSingerDiffusion"`, other noise types change the data we load. For example, setting
+    `noise_type` to `SimpleFlow` will cause the dataloader to load batches of times `t` in [0,1] rather than integer times in {1, ..., diffusion_k} as in DiffSingerDiffusion
     """
 
     def __init__(
@@ -80,6 +83,7 @@ class NaiveDataLoader:
         collate_fn: callable = pad_and_norm_collate_fn,
         diffusion_k: int = None,
         stats_path: str = None, # .npz files
+        noise_type: str = None,
     ):
         self.data_path = data_path
         with h5py.File(data_path, "r") as f:
@@ -89,6 +93,21 @@ class NaiveDataLoader:
         self.prefetch_batches = prefetch_batches
         self.collate_fn = collate_fn
         self.diffusion_k = diffusion_k
+        self.noise_type = noise_type
+
+        ##### Validate that the inputted noise_type is consistent with other input arguments
+        self.DIFF_SINGER_DIFFUSION = "DiffSingerDiffusion"
+        self.SIMPLE_FLOW = "SimpleFlow"
+        self.VALID_NOISE_TYPES = {self.DIFF_SINGER_DIFFUSION, self.SIMPLE_FLOW, None}
+        if self.noise_type not in self.VALID_NOISE_TYPES:
+            raise ValueError(f"`noise_type` must be in {self.VALID_NOISE_TYPES}, but got {self.noise_type=}")
+        if self.noise_type == "DiffSingerDiffusion":
+            if self.diffusion_k is None:
+                raise ValueError(f"if using {self.noise_type=}, then must set `diffusion_k` to an approriate integer, e.g. 100")
+        else:
+            if self.diffusion_k is not None:
+                raise ValueError(f"if using {self.noise_type=}, then must set `diffusion_k` to be `None`, but got {self.diffusion_k=}")
+        #####
 
         if dist.is_available() and dist.is_initialized():
             self.world_size = dist.get_world_size()
@@ -103,7 +122,7 @@ class NaiveDataLoader:
 
         self._state_dict_batches = [] # when prefetching data, we save the prefetched batches to the state dict and use them first when we resume training since the memmap positions were already updated when prefetching them
 
-        if self.prefetch_batches > 0: # TODO
+        if self.prefetch_batches > 0:
             self._queue = queue.Queue(maxsize=self.prefetch_batches)
             self._stop_event = threading.Event()
             self._thread = threading.Thread(target=self._prefetch_worker, daemon=True)
@@ -132,7 +151,7 @@ class NaiveDataLoader:
             'txt_tokens' : [],
         }
 
-        if self.diffusion_k is not None:
+        if self.noise_type is not None:
             batch['epsilon'] = []
 
         with h5py.File(self.data_path, "r") as f:
@@ -148,7 +167,7 @@ class NaiveDataLoader:
                 batch['mel2ph'].append(_mel2ph)
                 batch['uv'].append(_uv)
                 batch['txt_tokens'].append(_txt_tokens)
-                if self.diffusion_k is not None:
+                if self.noise_type is not None:
                     batch['epsilon'].append(torch.randn_like(_mel))
 
         self.current_position += self.batch_size * self.world_size
@@ -156,14 +175,15 @@ class NaiveDataLoader:
             self.reset()
 
         if self.diffusion_k is not None:
-            #epsilon = torch.randn_like(_mel)
-            t = torch.randint(1, self.diffusion_k+1, size=(self.batch_size,)) # random integer in {1, ..., k}
-            #batch['epsilon'] = epsilon
+            assert self.noise_type == self.DIFF_SINGER_DIFFUSION, f"{self.noise_type=}"
+            t = torch.randint(1, self.diffusion_k+1, size=(self.batch_size,)) # batch of random integers in {1, ..., k}
+            batch['t'] = t
+        elif self.noise_type == self.SIMPLE_FLOW:
+            t = torch.rand(size=(self.batch_size,)) # batch of random times in [0, 1]
             batch['t'] = t
 
-        collated_batch = self.collate_fn(batch, padding_value=self.padding_value, stats=self.stats) # TODO add f0_stats and mel_stats args
+        collated_batch = self.collate_fn(batch, padding_value=self.padding_value, stats=self.stats)
 
-        # TODO maybe generate and return diffsion time steps as well, if so create a new dict key called time_steps or something
         return collated_batch
 
     def _prefetch_worker(self):
@@ -188,7 +208,7 @@ class NaiveDataLoader:
         if is_cuda: 
             batch = {k : v.pin_memory().to(device, non_blocking=True) for k, v in batch.items()}
         else:
-            print(f"{device=}, {device.type=}")
+            print(f"{device=}")
             batch = {k : v.to(device) for k, v in batch.items()}
 
         return batch

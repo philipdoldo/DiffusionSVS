@@ -16,17 +16,68 @@ from loss_functions import get_loss_function
 import torch._dynamo
 torch._dynamo.config.cache_size_limit = 64
 
-"""
-TODO:
-    - get stats to normalize mel-spectrograms (don't need to unnormalize outputs I think, vocoder should accept normalized inputs) -- modify binarize.py
-        - save config when generating dataset and put in a nicer directory maybe
-        - get stats (min, max, mean, median, std) for f0 as well since in Section 4.1 they claim to standardize f0
-    # get loss functions defined for both phases of training and handle using them correctly (feeding correct inputs to models, both for train and val, etc.)
-        # need to load models properly depending on which phase of training is being done, just hardcode for now
-    - get vocoder set up to test inference
-"""
+class SimpleFlow:
+    def __init__(self, device):
+        self.device = device
 
-class DiffusionProcess:
+    def get_interpolant(self, mel, epsilon, t):
+        """
+        `mel` has shape (B, M, T) and is the ground-truth (normalized) mel-spectrogram (i.e., pure data)
+        `epsilon` has shape (B, M, T) and is isotropic gaussian noise
+        `t` has shape (B,) and is a batch of times in [0,1]
+        """
+        if not torch.all( t >= 0 or t <= 1):
+            raise ValueError(f"times should be in [0,1] but got {t.min()=}, {t.max()=}, {t=}")
+        t = t[:, None, None] # (B, 1, 1)
+        interpolant = t * mel + (1-t) * epsilon # at t=0, we have pure noise, at t=1 pure data
+        return interpolant # this is the "noisy" mel-spectrogram that we input into the denoiser
+
+    def sample(self, model, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, M=80, num_iter=100):
+        """
+        `model` is the denoiser, e.g. a WaveNetDenoiser class object
+        
+        `txt_tokens` has shape (B, P)  --  where B is batch size and P is the number of phonemes in the sequence
+            contains sequences of phoneme token ids (corresponding to the phonemes used in an audio file)
+        `mel2ph` has shape (B, T)  --  where T is the number of mel frames (when constructing the mel-spectrogram, time was discretized into T mel frames)
+            `mel2ph` on a given mel frame contains the `txt_token` index corresponding to the phoneme used on in the audio, it is important to note that
+            this is not the token id but the index into `txt_tokens`, this will allow for the same token id to potentially receive different positional
+            information if the same token is used multiple times in `txt_tokens`
+        `f0` has shape (B, T)
+            contains the fundamental frequency during each mel frame (interpolation was used to smooth across unvoiced segments, see data preprocessing/binarization code)
+        `uv` has shape (B, T) -- unused
+            boolean mask which is True when the audio was unvoiced, corresponds to where the preinterpolated f0 was zero. False otherwise.
+        `ph_padding_mask` has shape (B, P) and is True for padding values, False otherwise
+        `mel_padding_mask` has shape (B, T) and is True if the mel frame index (for a given batch index) corresponds to a padding value, False otherwise
+        `M` is an integer which represents in the number of mel bins of the mel-spectrogram that we want to generate
+
+        `num_iter` is the number of forward euler steps we do
+        """
+        if num_iter < 1 or not isinstance(num_iter, int):
+            raise ValueError(f"`num_iter` should be a positive integer, but got {num_iter=}, {type(num_iter)=}")
+        with torch.no_grad():
+            model.eval()
+            B, T = mel_padding_mask.shape
+            M_t = torch.randn((B, M, T), device=self.device) # inital noisy mel-spec at t=0
+            t = torch.zeros(B, dtype=torch.float32, device=self.device) # shape (B,) -- batch of times from t=0 (pure noise)
+            step_size = 1 / num_iter
+            for i in range(num_iter):
+                
+                model_output = model(
+                    txt_tokens=txt_tokens, 
+                    mel2ph=mel2ph,
+                    f0=f0,
+                    uv=uv, 
+                    ph_padding_mask=ph_padding_mask, 
+                    mel_padding_mask=mel_padding_mask,
+                    mel=M_t, 
+                    t=t
+                    )
+                
+                M_t = M_t + step_size * model_output # forward euler update, model_output is the vector field F of an ODE dM_t/dt = F(t, M_t) with initial condition M_0 ~ N(0, I)
+        return M_t # generated mel-spectrogram
+
+
+class DiffSingerDiffusion:
     def __init__(self, beta_min: float=1e-4, beta_max: float=0.06, T: int=100, device=None):
         """
         See Implementation Details in Section 4.1 https://arxiv.org/abs/2105.02446 which motivates the default values
@@ -244,9 +295,10 @@ if __name__ == "__main__":
                 return 1.25e-4
 
     model_config = config["model"]
+    diffusion_type = config['training']['diffusion'].get('diffusion_type')
+    diffusion_k = config['training']['diffusion'].get('k')
     if model_config["model_type"] == "EncoderDecoder": # Phase 1 of training
         model = EncoderDecoder(model_config)
-        diffusion_k = None
     elif model_config["model_type"] == "WaveNetDenoiser": # Phase 2 of training
         model = WaveNetDenoiser(model_config)
         encoder_checkpoint_path = config['model'].get('encoder_checkpoint')
@@ -260,10 +312,8 @@ if __name__ == "__main__":
             freeze(model.encoder)
             model.encoder.eval() # if the encoder is frozen, we don't want dropout active inside it
             print0("ENCODER PARAMETERS ARE FROZEN")
-        diffusion_k = config['training']['diffusion']['k']
     elif model_config["model_type"] == "DiT":
-        model = DiT(model_config)
-        diffusion_k = config['training']['diffusion']['k']
+        model = DiT(model_config)     
     else:
         raise ValueError(f"{model_config['model_type']=}")
 
@@ -349,7 +399,7 @@ if __name__ == "__main__":
     num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     write0(f"Model Parameters: {num_params:,}\nTrainable Model Parameters: {num_trainable_params:,}\n", log_file=log_file)
 
-    train_loader = NaiveDataLoader(data_path=train_data_path, batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"], diffusion_k=diffusion_k, stats_path=train_data_stats_path)
+    train_loader = NaiveDataLoader(data_path=train_data_path, batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"], diffusion_k=diffusion_k, stats_path=train_data_stats_path, diffusion_type=diffusion_type)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -403,14 +453,21 @@ if __name__ == "__main__":
     else:
         initial_step = 0 # if not resuming training, have training loop start at step 0
 
+    write0(f"USING DIFFUSION TYPE: {diffusion_type}\n", log_file=log_file)
     torch.manual_seed(config["training"]["rng_seed"] + rank) # (I guess this affects the categorical sampling, random times are in the dataloader)
     if config['model']['model_type'] in ["WaveNetDenoiser", "DiT"]: # just hardcoding some stuff like this for now...
-        diffusion = DiffusionProcess(
+        assert diffusion_type is not None
+    if diffusion_type == "DiffSingerDiffusion":
+        diffusion = DiffSingerDiffusion(
             beta_min=config['training']['diffusion']['beta_min'], 
             beta_max=config['training']['diffusion']['beta_max'], 
             T=config['training']['diffusion']['T'],
             device=device
             )
+    elif diffusion_type == "SimpleFlow":
+        diffusion = SimpleFlow(device=device)
+    elif diffusion_type is not None:
+        raise ValueError(f"Got {diffusion_type=}")
         
     # TRAINING LOOP
     for step in range(initial_step, training_steps):
@@ -444,7 +501,7 @@ if __name__ == "__main__":
                 t0 = time.time()
                 model.eval()
                 rng_state = torch.get_rng_state() # val might change rng state on rank 0, so save and restore it just in case, probably not very important
-                val_loader = NaiveDataLoader(data_path=val_data_path, batch_size=min(batch_size, config['training'].get('val_dataset_length', 24)), padding_value=config["model"]["pad_token_id"], diffusion_k=diffusion_k, stats_path=train_data_stats_path) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
+                val_loader = NaiveDataLoader(data_path=val_data_path, batch_size=min(batch_size, config['training'].get('val_dataset_length', 24)), padding_value=config["model"]["pad_token_id"], diffusion_k=diffusion_k, stats_path=train_data_stats_path, diffusion_type=diffusion_type) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
                 val_loader.reset() # should be unnecessary
 
                 ema.store(model.parameters()) # store copy of the actual model weights
@@ -459,18 +516,22 @@ if __name__ == "__main__":
                         if config['model']['model_type'] in ["WaveNetDenoiser", "DiT"]: # just hardcoding some stuff like this for now...
 
                             val_interpolant = diffusion.get_interpolant(mel=val_ground_truth_mel, epsilon=val_batch['epsilon'], t=val_batch['t'])
+                            if type(diffusion) == DiffSingerDiffusion:
+                                val_target = val_batch['epsilon'],
+                            elif type(diffusion) == SimpleFlow:
+                                val_target = val_ground_truth_mel - val_batch['epsilon']
 
                             val_model_output = model(
                                 txt_tokens=val_batch['txt_tokens'], 
                                 mel2ph=val_batch['mel2ph'],
-                                f0=val_batch['f0'], # TODO need to standardize? probably do in collator?
+                                f0=val_batch['f0'],
                                 uv=val_batch['uv'], 
                                 ph_padding_mask=val_batch['ph_padding_mask'], 
                                 mel_padding_mask=val_batch['mel_padding_mask'],
                                 mel=val_interpolant, 
                                 t=val_batch['t']
                                 )
-                            val_loss = loss_function(ground_truth_mel=val_batch['epsilon'], output_mel=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
+                            val_loss = loss_function(target=val_target, pred=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
                         elif config['model']['model_type'] == "EncoderDecoder":
                             val_model_output = model(
                                 txt_tokens=val_batch['txt_tokens'],
@@ -480,11 +541,10 @@ if __name__ == "__main__":
                                 ph_padding_mask=val_batch['ph_padding_mask'],
                                 mel_padding_mask=val_batch['mel_padding_mask']
                                 )
-                            val_loss = loss_function(ground_truth_mel=val_ground_truth_mel, output_mel=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
+                            val_loss = loss_function(target=val_ground_truth_mel, pred=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
                         else:
                             raise ValueError(f"{config['model']['model_type']=}")
 
-                    #val_loss = loss_function(ground_truth_mel=val_ground_truth_mel, output_mel=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
                     val_losses.append(val_loss)
                 val_loss = sum(val_losses) / len(val_losses)
                 ema.restore(model.parameters()) # copy stored model weights back into the model
@@ -519,18 +579,22 @@ if __name__ == "__main__":
                 if config['model']['model_type'] in ["WaveNetDenoiser", "DiT"]: # just hardcoding some stuff like this for now...
 
                     interpolant = diffusion.get_interpolant(mel=ground_truth_mel, epsilon=batch['epsilon'], t=batch['t'])
+                    if type(diffusion) == DiffSingerDiffusion:
+                        target = batch['epsilon'],
+                    elif type(diffusion) == SimpleFlow:
+                        target = ground_truth_mel - batch['epsilon']
 
                     model_output = model(
                         txt_tokens=batch['txt_tokens'], 
                         mel2ph=batch['mel2ph'],
-                        f0=batch['f0'], # TODO need to standardize? probably do in collator?
+                        f0=batch['f0'],
                         uv=batch['uv'], 
                         ph_padding_mask=batch['ph_padding_mask'], 
                         mel_padding_mask=batch['mel_padding_mask'],
                         mel=interpolant, 
                         t=batch['t']
                         )
-                    loss = loss_function(ground_truth_mel=batch['epsilon'], output_mel=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
+                    loss = loss_function(target=target, pred=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
                 elif config['model']['model_type'] == "EncoderDecoder":
                     model_output = model(
                         txt_tokens=batch['txt_tokens'],
@@ -540,11 +604,10 @@ if __name__ == "__main__":
                         ph_padding_mask=batch['ph_padding_mask'],
                         mel_padding_mask=batch['mel_padding_mask']
                         )
-                    loss = loss_function(ground_truth_mel=ground_truth_mel, output_mel=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
+                    loss = loss_function(target=ground_truth_mel, pred=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
                 else:
                     raise ValueError(f"{config['model']['model_type']=}")
 
-            #loss = loss_function(ground_truth_mel=ground_truth_mel, output_mel=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps # uhh, surely this was a typo?? I need the target to be different during diffusion
             train_loss += loss.detach() # for logging
 
             if scaler is not None:

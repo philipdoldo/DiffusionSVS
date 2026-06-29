@@ -6,20 +6,22 @@ def get_loss_function(config):
     In DiffSinger, they use a linear combination of the L1 and SSIM losses, e.g. loss = 0.5 * L1_loss + 0.5 * ssim_loss, see e.g. https://github.com/MoonInTheRiver/DiffSinger/blob/ce7789f1427ddcdec647b3ab2bf2d1b12134e51e/configs/tts/fs2.yaml#L54
     """
     weights = {
+        'l2': config.get('l2_weight', 0),
         'l1': config.get('l1_weight', 0),
         'ssim': config.get('ssim_weight', 0),
     }
     loss_fns = {
+        'l2': L2_loss,
         'l1': L1_loss,
         'ssim': ssim_loss,
     }
 
-    def loss(ground_truth_mel, output_mel, mel_padding_mask):
+    def loss(target, pred, mel_padding_mask):
         at_least_one_nonzero_loss_weight = False
         total = 0.0
         for name, w in weights.items():
             if w != 0.0:
-                total = total + w * loss_fns[name](ground_truth_mel, output_mel, mel_padding_mask)
+                total = total + w * loss_fns[name](target, pred, mel_padding_mask)
                 at_least_one_nonzero_loss_weight = True
         if not at_least_one_nonzero_loss_weight:
             raise ValueError(f"{config=}")
@@ -28,9 +30,30 @@ def get_loss_function(config):
     return loss
 
 
-def L1_loss(ground_truth_mel, output_mel, mel_padding_mask):
+
+def L2_loss(target, pred, mel_padding_mask):
     """
-    `ground_truth_mel` is the ground-truth mel-spectrogram and `output_mel` is the mel-spectrogram output from the model.
+    `target` and `pred` both have the shape of a mel-spectrogram. `pred` is typically the output of a model which is the model's prediction of the ground-truth target
+        Both have shape (B, M, T)
+    `mel_padding_mask` is True when mel-frames correspond to padding.
+        shape (B, T)
+    
+    In practice, we need to ignore padding terms because the mel-frame (time) dimension is padded.
+    """
+    mask = torch.logical_not(mel_padding_mask) # (B, T)
+    counts = mask.sum(dim=1) # (B,)
+    mask = mask[:, None, :] # (B, 1, T)
+    B, M, T = target.shape
+    target = target * mask # (B, M, T)
+    pred = pred * mask # (B, M, T)
+    diff = target - pred # (B, M, T)
+    loss = (diff ** 2).sum(dim=(1,2)) / (counts * M) # shape (B,) -- normalize by T * M * B to take the average over all terms, but we use `counts` instead of `T` because we don't want to average over padding terms
+    loss = torch.sum(loss) / B # average over all batches
+    return loss
+
+def L1_loss(target, pred, mel_padding_mask):
+    """
+    `target` and `pred` both have the shape of a mel-spectrogram. `pred` is typically the output of a model which is the model's prediction of the ground-truth target
         Both have shape (B, M, T)
     `mel_padding_mask` is True when mel-frames correspond to padding.
         shape (B, T)
@@ -43,17 +66,17 @@ def L1_loss(ground_truth_mel, output_mel, mel_padding_mask):
     mask = torch.logical_not(mel_padding_mask) # (B, T)
     counts = mask.sum(dim=1) # (B,)
     mask = mask[:, None, :] # (B, 1, T)
-    B, M, T = ground_truth_mel.shape
-    target = ground_truth_mel * mask # (B, M, T)
-    pred = output_mel * mask # (B, M, T)
+    B, M, T = target.shape
+    target = target * mask # (B, M, T)
+    pred = pred * mask # (B, M, T)
     diff = target - pred # (B, M, T)
     loss = torch.abs(diff).sum(dim=(1,2)) / (counts * M) # shape (B,) -- normalize by T * M * B to take the average over all terms, but we use `counts` instead of `T` because we don't want to average over padding terms
     loss = torch.sum(loss) / B # average over all batches
     return loss
 
-def ssim_loss(ground_truth_mel, output_mel, mel_padding_mask, bias=6.0):
+def ssim_loss(target, pred, mel_padding_mask, bias=6.0):
     """
-    `ground_truth_mel` is the ground-truth mel-spectrogram and `output_mel` is the mel-spectrogram output from the model.
+    `target` and `pred` both have the shape of a mel-spectrogram. `pred` is typically the output of a model which is the model's prediction of the ground-truth target
         Both have shape (B, M, T)
     `mel_padding_mask` is True when mel-frames correspond to padding.
         shape (B, T)
@@ -70,13 +93,13 @@ def ssim_loss(ground_truth_mel, output_mel, mel_padding_mask, bias=6.0):
         https://github.com/MoonInTheRiver/DiffSinger/blob/ce7789f1427ddcdec647b3ab2bf2d1b12134e51e/modules/commons/ssim.py#L354
     """
     mask = torch.logical_not(mel_padding_mask) # (B, T)
-    B, M, T = output_mel.shape
-    if ground_truth_mel.shape != output_mel.shape or T != mask.shape[-1] or B != mask.shape[0] or len(mask.shape) != 2:
-        raise ValueError(f"{ground_truth_mel.shape=}, {output_mel.shape=}, {mask.shape=}, {B=}, {M=}, {T=}")
+    B, M, T = pred.shape
+    if target.shape != pred.shape or T != mask.shape[-1] or B != mask.shape[0] or len(mask.shape) != 2:
+        raise ValueError(f"{target.shape=}, {pred.shape=}, {mask.shape=}, {B=}, {M=}, {T=}")
 
     # treat mel as a 1-channel 2D image: (B, 1, M, T)
-    x = output_mel[:, None, :, :] + bias # (B, 1, M, T)
-    y = ground_truth_mel[:, None, :, :] + bias # (B, 1, M, T)
+    x = pred[:, None, :, :] + bias # (B, 1, M, T)
+    y = target[:, None, :, :] + bias # (B, 1, M, T)
 
     # build 11x11 isotropic Gaussian window, shape [1, 1, 11, 11]
     coords = torch.arange(11, dtype=torch.float32, device=x.device) - 5 #   tensor([-5., -4., -3., -2., -1.,  0.,  1.,  2.,  3.,  4.,  5.])
