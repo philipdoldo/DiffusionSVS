@@ -551,8 +551,8 @@ class DiT(nn.Module):
         The time embedding gets treated as the conditional embedding. The music score embeddings are used during cross attention.
         """
         B, M, T = mel.shape 
-        if self.patchify and T % self.patch_size != 1:
-            raise ValueError(f"When using patchify, you must pad to the nearest multiply of the patch size, currently using {self.patch_size=}")
+        if self.patchify and T % self.patch_size != 0:
+            raise ValueError(f"When using patchify, you must pad to the nearest multiply of the patch size, currently using {self.patch_size=}, {T=}, {T % self.patch_size=}")
         if M != self.num_mel_bins:
             raise ValueError(f"{mel.shape=}, {self.num_mel_bins=}")
         cos_sin = self.cos, self.sin
