@@ -88,6 +88,8 @@ def apply_rotary_emb(x, cos, sin):
 
     # Truncate `cos` and `sin` to the input sequence length
     input_seq_len = x.shape[1]
+    if input_seq_len > cos.shape[1]:
+        raise ValueError(f"Input sequence length is larger than the rotary cache, got {input_seq_len=}, {cos.shape=}, {sin.shape=}")
     cos = cos[:, :input_seq_len, :, :]
     sin = sin[:, :input_seq_len, :, :]
 
@@ -517,7 +519,13 @@ class DiT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.music_score_encoder = MusicScoreEncoder(config)
-        self.input_projection = nn.Conv1d(in_channels=config['num_mel_bins'], out_channels=config['embedding_dim'], kernel_size=1) # map (B, M, T) to (B, d, T)
+        self.patchify = config.get('patchify', False)
+        self.patch_size = config.get('patch_size', 1)
+        if self.patch_size != 1 and not self.patchify:
+            raise ValueError(f"Should only be using a patch size larger than 1 if using patchify, but got {self.patchify=}, {self.patch_size=}")
+        self.input_projection = nn.Conv1d(in_channels=config['num_mel_bins'], out_channels=config['embedding_dim'], kernel_size=self.patch_size, stride=self.patch_size) # map (B, M, T) to (B, d, T)
+        if self.patchify:
+            self.music_score_patchify_proj = nn.Conv1d(in_channels=config['embedding_dim'], out_channels=config['embedding_dim'], kernel_size=self.patch_size, stride=self.patch_size)
         self.time_emb = SinusoidalPositionalEmbedding(embedding_dim=config['embedding_dim'], base=config['sinusoidal_base'])
         self.time_emb_mlp = nn.Sequential(
             nn.Linear(config['embedding_dim'], config['embedding_dim']*4),
@@ -526,14 +534,15 @@ class DiT(nn.Module):
         ) # copied exactly from WaveNet implementation for now, TODO maybe use MLP class and use config for activation
         self.blocks = nn.ModuleList([DiTBlock(config) for _ in range(config['num_dit_blocks'])])
         self.final_ada_ln_proj = AdaLNProjection(embed_dim=config['embedding_dim'], cond_dim=config['embedding_dim'], output_factor=2)
-        self.output_projection = nn.Linear(config['embedding_dim'], config['num_mel_bins'], bias=False)
+        self.output_projection = nn.Linear(config['embedding_dim'], config['num_mel_bins']*self.patch_size, bias=False)
         self.num_mel_bins = config['num_mel_bins']
 
         head_dim = config['embedding_dim'] // config['num_attention_heads']
         assert config['num_attention_heads'] * head_dim == config['embedding_dim'], f"{config['num_attention_heads']=}, {head_dim=}, {config['embedding_dim']=}, {config['embedding_dim'] % config['num_attention_heads']=}"
 
         # Note that these rotary embeddings are for mel-frame sequence positions, NOT phoneme sequence positions as in the case of the music score encoder
-        cos, sin = precompute_rotary_embeddings(seq_len=config['max_mel_frames'], head_dim=head_dim, base=config['rotary_base'])
+        max_rotary_seq_len = config['max_mel_frames'] if not self.patchify else config['max_mel_frames'] // self.patch_size
+        cos, sin = precompute_rotary_embeddings(seq_len=max_rotary_seq_len, head_dim=head_dim, base=config['rotary_base'])
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
 
@@ -542,22 +551,33 @@ class DiT(nn.Module):
         The time embedding gets treated as the conditional embedding. The music score embeddings are used during cross attention.
         """
         B, M, T = mel.shape 
+        if self.patchify and T % self.patch_size != 1:
+            raise ValueError(f"When using patchify, you must pad to the nearest multiply of the patch size, currently using {self.patch_size=}")
         if M != self.num_mel_bins:
             raise ValueError(f"{mel.shape=}, {self.num_mel_bins=}")
         cos_sin = self.cos, self.sin
 
         music_score_emb = self.music_score_encoder(txt_tokens=txt_tokens, mel2ph=mel2ph, f0=f0, uv=uv, ph_padding_mask=ph_padding_mask, mel_padding_mask=mel_padding_mask) # (B, T, d)
+        attn_mask = torch.logical_not(mel_padding_mask) # (B, T)
+        if self.patchify:
+            music_score_emb = self.music_score_patchify_proj( music_score_emb.transpose(-1, -2) ).transpose(-1, -2) # (B, T//p, d), patchify to go from T to T//p sequence length
+            attn_mask = attn_mask.view(B, T//self.patch_size, self.patch_size).all(dim=-1) # patchified attention padding mask -- sequence positions are only treated as padding if every single value in the patch was a padding value, last patch might have a mix of non-padding and padding values which isn't perfect but hopefully not a big problem
+
         time_emb = self.time_emb(t) # (B, d)
         c = self.time_emb_mlp(time_emb) # (B, d) 
 
-        x = self.input_projection(mel).transpose(-1, -2) # (B, T, d) -- each mel frame corresponds to a d-dimensional embedding vector (projection maps M to d)
+        x = self.input_projection(mel).transpose(-1, -2) # (B, T//p, d) -- each patch of mel frames corresponds to a d-dimensional embedding vector (projection maps M to d)
 
         scale, shift = self.final_ada_ln_proj(c) # 2-tuple of tensors of shape (B, 1, d) 
 
-        attn_mask = torch.logical_not(mel_padding_mask) # (B, T)
+        
         for block in self.blocks:
-            x = block(x=x, c=c, cos_sin=cos_sin, attn_mask=attn_mask, x_kv=music_score_emb) # (B, T, d)
-        x = F.layer_norm(x, [x.shape[-1]]) * (1 + scale) + shift # (B, T, d)
-        output = self.output_projection(x).transpose(-1, -2) # (B, M, T)
+            x = block(x=x, c=c, cos_sin=cos_sin, attn_mask=attn_mask, x_kv=music_score_emb) # (B, T//p, d)
+        x = F.layer_norm(x, [x.shape[-1]]) * (1 + scale) + shift # (B, T//p, d)
 
+        x = self.output_projection(x) # (B, T//p, M*p)
+        if self.patch_size != 1: # reshape from (B, T//p, M*p) to (B, T, M)
+            x = x.view(B, (T // self.patch_size)*self.patch_size, M) # (B, T, M)
+        
+        output = x.transpose(-1, -2) # (B, M, T)
         return output

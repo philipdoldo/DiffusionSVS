@@ -7,9 +7,11 @@ import time
 
 import h5py
 from torch.nn.utils.rnn import pad_sequence
+import torch.nn.functional as F
+import math
+from functools import partial
 
-
-def pad_and_norm_collate_fn(batch, padding_value, stats=None):
+def pad_and_norm_collate_fn(batch, padding_value, stats=None, mel_pad_multiple=1):
     """`batch` is a dictionary of lists of tensors"""
     # (T,) tensors -- pad along T to (B, T_max)
     f0         = pad_sequence(batch["f0"],         batch_first=True, padding_value=padding_value) # (B, T_max)
@@ -24,12 +26,23 @@ def pad_and_norm_collate_fn(batch, padding_value, stats=None):
     # (P,) tensors -- pad along P to (B, P_max)
     txt_tokens = pad_sequence(batch["txt_tokens"], batch_first=True, padding_value=padding_value) # (B, P_max)
 
+    # Pad T further to the nearest multiple of `mel_pad_multiple` (rounding up) -- useful if using patchify in DiT, for example
+    T_max = mel.shape[-1]
+    T_padded = math.ceil(T_max / mel_pad_multiple) * mel_pad_multiple
+    extra = T_padded - T_max
+    if extra > 0:
+        f0     = F.pad(f0,     (0, extra), value=padding_value)
+        mel2ph = F.pad(mel2ph, (0, extra), value=padding_value)
+        uv     = F.pad(uv,     (0, extra), value=padding_value)
+        mel    = F.pad(mel,    (0, extra), value=padding_value)
+        if "epsilon" in batch:
+            epsilon = F.pad(epsilon, (0, extra), value=padding_value)
+
     # Compute masks: True if padding, False otherwise
     mel_lengths = torch.tensor([x.shape[-1] for x in batch["mel"]]) # (B,)
     txt_lengths = torch.tensor([x.shape[0] for x in batch["txt_tokens"]]) # (B,)
-    T_max = mel.shape[-1]
     P_max = txt_tokens.shape[-1]
-    mel_mask = torch.arange(T_max)[None, :] >= mel_lengths[:, None] # (B, T_max)
+    mel_mask = torch.arange(T_padded)[None, :] >= mel_lengths[:, None] # (B, T_padded)
     txt_mask = torch.arange(P_max)[None, :] >= txt_lengths[:, None] # (B, P_max)
     
     if stats is not None:
@@ -84,6 +97,7 @@ class NaiveDataLoader:
         diffusion_k: int = None,
         stats_path: str = None, # .npz files
         diffusion_type: str = None,
+        mel_pad_multiple: int = 1,
     ):
         self.data_path = data_path
         with h5py.File(data_path, "r") as f:
@@ -91,7 +105,7 @@ class NaiveDataLoader:
         self.batch_size = batch_size
         self.padding_value = padding_value
         self.prefetch_batches = prefetch_batches
-        self.collate_fn = collate_fn
+        self.collate_fn = partial(collate_fn, mel_pad_multiple=mel_pad_multiple)
         self.diffusion_k = diffusion_k
         self.diffusion_type = diffusion_type
 

@@ -1,3 +1,6 @@
 *.ckpt
 *.zip
 __pycache__/
+binarized_data/
+experiments/
+popcs/
