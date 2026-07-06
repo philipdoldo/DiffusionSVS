@@ -77,9 +77,11 @@ if __name__ == "__main__":
 
     diffusion_type = denoiser_config['training']['diffusion'].get('diffusion_type', 'DiffSingerDiffusion')
     diffusion_k = denoiser_config['training']['diffusion'].get('k')
+    mel_pad_multiple = denoiser_config['training'].get('mel_pad_multiple', 1)
     print(f"\n     ----- USING {diffusion_type=} -----\n")
     print(f"{diffusion_k=}")
-    test_loader = NaiveDataLoader(data_path=TEST_H5, batch_size=1, padding_value=0, rng_seed=21, diffusion_k=diffusion_k, stats_path=TRAIN_STATS_PATH, diffusion_type=diffusion_type)
+    print(f"{mel_pad_multiple=}")
+    test_loader = NaiveDataLoader(data_path=TEST_H5, batch_size=1, padding_value=0, rng_seed=21, diffusion_k=diffusion_k, stats_path=TRAIN_STATS_PATH, diffusion_type=diffusion_type, mel_pad_multiple=mel_pad_multiple)
 
     batch = test_loader.next_batch(device) # maybe create dummy .h5 of just a single example
     
