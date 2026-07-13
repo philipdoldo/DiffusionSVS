@@ -1,0 +1,24 @@
+# default config for binarizing PopCS data
+
+[audio]
+sample_rate = 24000
+hop_size = 128
+window_size = 512
+n_mels = 80
+min_freq = 30 # Hz
+max_freq = 12000 # Hz
+mel_center = true # default in librosa
+mel_log_clip = 1e-6
+
+[f0]
+extractor = "parselmouth"   # "parselmouth" | "harvest"
+f0_min    = 50.0
+f0_max    = 1100.0
+
+[data]
+max_mel_frames = 8000 # truncate to 8000 mel frames
+raw_data_dirs = ["/home/phil/DiffusionSVS/popcs", "/home/phil/DiffusionSVS/m4singer/m4singer", "/home/phil/DiffusionSVS/gtsinger/Chinese-006"]
+exclude_dirs = ["Paired_Speech_Group", "__MACOSX", ]
+save_dir = "/home/phil/DiffusionSVS/binarized_data"
+test_songs = ["popcs/popcs-说散就散", "popcs/popcs-隐形的翅膀"]
+val_songs = ["popcs/popcs-夏天的风", "popcs/popcs-稻香"]  # your choice, just not the test songs (DiffSinger effectively made test and val sets equal to each other, I won't do that)

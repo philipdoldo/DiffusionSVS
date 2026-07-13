@@ -4,3 +4,5 @@ __pycache__/
 binarized_data/
 experiments/
 popcs/
+gtsinger/
+m4singer/
