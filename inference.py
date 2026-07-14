@@ -27,8 +27,10 @@ if __name__ == "__main__":
 
     VOCODER_CHECKPOINT_PATH = "third_party/DiffSinger-vocoder/model_ckpt_steps_280000.ckpt" # checkpoint from the .zip file downloaded
     VOCODER_CONFIG_PATH = "third_party/DiffSinger-vocoder/config.yaml" # config from the .zip file downloaded
-    TEST_H5 = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s/test.h5"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/test.h5"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/test.h5"##"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-13-2026-19h51m02s/test.h5"
-    TRAIN_STATS_PATH = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s/train_stats.npz"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/train_stats.npz"
+    ### TODO infer both test h5 and train stats from same data dir input, maybe create subdir to store audio output in with a file showing what dataset what used for generating the inference output
+    ###TEST_H5 = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-popcs-m4singer-gtsinger/07-13-2026-05h16m12s/test.h5"###"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s/test.h5"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/test.h5"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-14-2026-11h08m51s/test.h5"##"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-13-2026-19h51m02s/test.h5"
+    # TODO, need to change the training stats path to be based on the config since it'll be different for different binarized datasets!
+    ###TRAIN_STATS_PATH = "/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-popcs-m4singer-gtsinger/07-13-2026-05h16m12s/train_stats.npz"###"/mnt/data_r60_1/adv_robust_project/DiffusionSVS/binarized_data/_binarize-PopCS/06-15-2026-02h12m44s/train_stats.npz"#"/home/phil/DiffusionSVS/binarized_data/binarize-PopCS/06-16-2026-16h12m26s/train_stats.npz"
     #OUTPUT_PATH = "_output/inference_output0-ok10-160k-dit-ema.wav"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -54,7 +56,10 @@ if __name__ == "__main__":
     denoiser_checkpoint = torch.load(denoiser_checkpoint_path, map_location=device)
     with open(denoiser_config_path, "r") as f:
         denoiser_config = toml.load(f)
-    
+    denoiser_data_path = Path(denoiser_config['training']['data_dir'])
+    TEST_H5 = denoiser_data_path / "test.h5"
+    TRAIN_STATS_PATH = denoiser_data_path / "train_stats.npz"
+
     model_type = denoiser_config['model']['model_type'] 
     if model_type == "DiT":
         model_class = DiT
