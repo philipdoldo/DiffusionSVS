@@ -192,11 +192,12 @@ def build_phoneme_vocab(items: list[dict], save_dir: str) -> dict[str, int]:
         tier = text_grid.tiers[1] # we use index 1 because we want the second tier because that is what other people used
         for interval in tier:
             phoneme = interval.mark.strip()
-            if len(phoneme) > 0:
+            if len(phoneme) > 0 and phoneme not in special_tokens: # a token in the parsed vocab could itself be a special token, e.g. "<SP>", so I handle that case here while keeping the special tokens prepended at the start in the order I want them in
                 vocab.add(phoneme)
 
     vocab = special_tokens + sorted(vocab)
     vocab = {token: i for i, token in enumerate(vocab)}
+    assert vocab[PAD_TOKEN] == 0, f"{vocab[PAD_TOKEN]=}, {vocab=}"
     save_path = save_dir / "vocab.json"
     with open(save_path, "w", encoding="utf-8") as f:
         json.dump(vocab, f, ensure_ascii=False, indent=2)
