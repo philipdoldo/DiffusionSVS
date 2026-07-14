@@ -264,6 +264,8 @@ if __name__ == "__main__":
     vocab =  json.load(open(phoneme_vocab_path, encoding="utf-8")) # load phoneme vocabulary to sanity check padding token matches config
     if config["model"]["pad_token_id"] != vocab["<PAD>"]:
         raise ValueError(f"Padding token id in {phoneme_vocab_path} does not match the one in {args.config}. {config['model']['pad_token_id']=}, {vocab['<PAD>']=}")
+    if config["model"]["vocab_size"] != len(vocab):
+        raise ValueError(f"Dataset vocab size ({len(vocab)=}) does not match model vocab size ({config['model']['vocab_size']=}), used vocab from: {phoneme_vocab_path}")
 
     # Learning Rate Schedule (Cosine Decay -- warmup + constant if you let min_lr = max_lr and cosine_decay_steps=0)
     warmup_steps = config["training"].get("warmup_steps") # should only be None if `use_step_decay` is True
