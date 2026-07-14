@@ -69,7 +69,8 @@ from datetime import datetime
 from pathlib import Path
 from tqdm import tqdm
 
-SILENCE_TOKEN = "SP"
+PAD_TOKEN = "<PAD>"
+SILENCE_TOKEN = "<SP>"
 BOS_TOKEN = "<BOS>"
 EOS_TOKEN = "<EOS>"
 
@@ -181,7 +182,7 @@ def build_phoneme_vocab(items: list[dict], save_dir: str) -> dict[str, int]:
     Output is a dictionary with string token keys (corresponding to phonemes or special tokens) and integer
     values. A .json file of the collected vocabulary is saved in `save_dir`
     """
-    special_tokens = ["<PAD>", "<BOS>", "<EOS>", "SP"]
+    special_tokens = [PAD_TOKEN, BOS_TOKEN, EOS_TOKEN, SILENCE_TOKEN]
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
