@@ -13,6 +13,8 @@ from model import MusicScoreEncoder, AuxiliaryDecoder, WaveNet, EncoderDecoder, 
 from exponential_moving_average import ExponentialMovingAverage
 from data.dataloader import NaiveDataLoader
 from loss_functions import get_loss_function
+from muon import Muon
+from functools import partial
 import torch._dynamo
 torch._dynamo.config.cache_size_limit = 64
 
@@ -268,34 +270,41 @@ if __name__ == "__main__":
         raise ValueError(f"Dataset vocab size ({len(vocab)=}) does not match model vocab size ({config['model']['vocab_size']=}), used vocab from: {phoneme_vocab_path}")
 
     # Learning Rate Schedule (Cosine Decay -- warmup + constant if you let min_lr = max_lr and cosine_decay_steps=0)
-    warmup_steps = config["training"].get("warmup_steps") # should only be None if `use_step_decay` is True
-    max_lr = config["training"].get("max_lr") # should only be None if `use_step_decay` is True
-    min_lr = config["training"].get("min_lr", None if max_lr is None else max_lr/10)
-    lr_decay_steps = config["training"].get("cosine_decay_steps", None if warmup_steps is None else training_steps - warmup_steps)
-    use_step_decay = config["training"].get("use_step_decay", False)
-    def get_lr(it):
-        if not use_step_decay:
-            # 1) linear warmup for warmup_steps steps
-            if it < warmup_steps:
-                return max_lr * (it + 1) / (warmup_steps + 1)
-            # 2) if it > lr_decay_steps, return min learning rate
-            if it > lr_decay_steps:
-                return min_lr
-            # 3) in between, use cosine decay down to min learning rate
-            decay_ratio = (it - warmup_steps) / (lr_decay_steps - warmup_steps)
+    warmup_steps = config["training"]["warmup_steps"]
+    max_lr = config["training"]["max_lr"]
+    min_lr = config["training"].get("min_lr", max_lr/10)
+    cosine_decay_steps = config["training"].get("cosine_decay_steps", training_steps - warmup_steps)
+    if min_lr > max_lr:
+        raise ValueError(f"Expected to have `min_lr` <= `max_lr`, got: {min_lr=}, {max_lr=}")
+    def cosine_lrm(step: int, warmup_steps: int, cosine_decay_steps: int, min_lrm: float):
+        """
+        learning rate multiplier schedule to simplify using different learning rates for different param groups with muon,
+        also allows backwards compatibility with how lr was set previously -- I effectively normalized everything by `max_lr`
+
+        `step` is the iteration of training we're on, which is assumed to start at 0
+        `warmup_steps` is the number of steps to do a linear warmup from `1/(warmup_steps+1)` to `warmup_steps/(warmup_steps+1)`
+        `min_lrm` is the minimum learning rate multiplier, set to be `min_lr/max_lr` e.g. 1/10 if we want to decrease lr by a factor of 10 after cosine decay
+        `cosine_decay_steps` is the number of steps that the cosine decay portion of the schedule lasts for
+        
+        The cosine decay ends after `warmup_steps + cosine_decay_steps` steps where the first `warmup_steps` steps are a linear 
+        increase and the next `cosine_decay_steps` use a cosine decay and then any steps afterwards use `min_lrm`
+
+        For a constant lr schedule, let min_lrm=1 and cosine_decay_steps=0
+        """
+
+        if step < warmup_steps: # linear warmup for warmup_steps steps
+            return (step + 1) / (warmup_steps + 1) # linearly increase to 1 (never quite reach 1 during warmup stage)
+        elif cosine_decay_steps == 0:
+            return 1
+        elif step >= warmup_steps and step < warmup_steps + cosine_decay_steps: # in between, use cosine decay down from 1 to min_lrm (start at 1, but never quite reach min_lrm during cosine decay stage)
+            decay_ratio = (step - warmup_steps) / cosine_decay_steps # increases from 0 to 1
             assert 0 <= decay_ratio <= 1
-            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
-            return min_lr + coeff * (max_lr - min_lr)
-        else:
-            # hardcoding what DiffSinger uses as default for training their denoiser, just for replication purposes. I am basing this off of the lr plot from training DiffSinger with their code
-            if it < 50000:
-                return 1e-3
-            elif it < 100000:
-                return 5e-4
-            elif it < 150000:
-                return 2.5e-4
-            else:
-                return 1.25e-4
+            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # `coeff` goes from 1 down to 0
+            return coeff + (1 - coeff) * min_lrm # convex combination between 1 and min_lrm where `coeff` is in [0,1]
+        elif step >= warmup_steps + cosine_decay_steps: # after the cosine decay is done, return the minimum learning rate multiplier
+            return min_lrm
+
+    get_lrm = partial(cosine_lrm, warmup_steps=warmup_steps, cosine_decay_steps=cosine_decay_steps, min_lrm=min_lr/max_lr) 
 
     model_config = config["model"]
     diffusion_type = config['training']['diffusion'].get('diffusion_type')
@@ -405,13 +414,22 @@ if __name__ == "__main__":
     mel_pad_multiple = config['training'].get('mel_pad_multiple', 1)
     train_loader = NaiveDataLoader(data_path=train_data_path, batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"], diffusion_k=diffusion_k, stats_path=train_data_stats_path, diffusion_type=diffusion_type, mel_pad_multiple=mel_pad_multiple)
 
-    optimizer = torch.optim.AdamW(
+    adamw_optimizer = torch.optim.AdamW(
         model.parameters(),
         weight_decay=config["training"]["AdamW_weight_decay"],
         betas=config["training"]["AdamW_betas"],
         eps=config["training"]["AdamW_epsilon"],
         fused=True
         )
+    
+    # TODO need to set up param groups for the optimizers, need a 'base_lr' attribute as well for the params to multiply against lrm, maybe change max_lr and min_lr to adamw_max_lr or something idk idk idk idk idk idk idk idk idk
+
+    if config.get('use_muon'): # or something...... 
+        muon_optimizer = Muon() # TODO
+    else:
+        muon_optimizer = None
+
+    optimizers = {'AdamW' : adamw_optimizer, 'Muon' : muon_optimizer } # will use these dict key name to save optimizer states to checkpoints, need to be careful when we load them too # TODO
     
     ema = ExponentialMovingAverage(params=model.parameters(), decay=config["training"]["ema_decay"])
 
@@ -622,9 +640,9 @@ if __name__ == "__main__":
         if dist.is_initialized():
             dist.all_reduce(train_loss, op=dist.ReduceOp.AVG) # for logging
         
-        lr = get_lr(step)
+        lrm = get_lrm(step)
         for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+            param_group['lr'] = lrm * max_lr
 
         if scaler is not None:
             scaler.unscale_(optimizer) # important that this is done before clip_grad_norm
