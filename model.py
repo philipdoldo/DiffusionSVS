@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from muon import Muon
 
 def mel2ph_to_dur(mel2ph, P, mel_padding_mask, max_dur=None):
     """
@@ -581,3 +582,65 @@ class DiT(nn.Module):
         
         output = x.transpose(-1, -2) # (B, M, T)
         return output
+
+    def setup_optimizers(self, adamw_base_lr, adamw_weight_decay, adamw_betas, adamw_epsilon, muon_base_lr, muon_weight_decay=0, muon_momentum=0.95):
+        """
+        Splits parameters into Muon (hidden 2D matmul weights) and AdamW (embeddings,
+        input/output projections, adaLN modulation, scalar-input projections, biases)
+        groups, and constructs both optimizers. Returns (adamw_optimizer, muon_optimizer).
+        """
+        adamw_modules = set()
+        adamw_modules.add(self.input_projection)
+        adamw_modules.add(self.output_projection)
+        adamw_modules.add(self.final_ada_ln_proj.W)
+        adamw_modules.add(self.music_score_encoder.dur_embed)   # in_features=1, embedding-like
+        adamw_modules.add(self.music_score_encoder.pitch_embed) # in_features=1, embedding-like
+        for block in self.blocks:
+            adamw_modules.add(block.ada_ln_proj.W)
+        # music_score_patchify_proj is intentionally NOT excluded -- it's a genuine
+        # hidden-to-hidden (embed_dim -> embed_dim) Conv1d, so it's Muon-eligible
+
+        muon_params, adamw_params = [], []
+        seen = set()
+
+        for module in self.modules():
+            if isinstance(module, (nn.Linear, nn.Conv1d)):
+                if module.weight.ndim >= 2 and module not in adamw_modules: # use muon for intermediate matrix parameters
+                    if id(module.weight) not in seen:
+                        muon_params.append(module.weight)
+                        seen.add(id(module.weight))
+
+        for name, p in self.named_parameters():
+            if id(p) not in seen:
+                adamw_params.append(p)
+                seen.add(id(p))
+
+        total = sum(p.numel() for p in self.parameters())
+        split_total = sum(p.numel() for p in muon_params) + sum(p.numel() for p in adamw_params)
+        assert total == split_total, f"{total=} != {split_total=}, param split is missing or double-counting params"
+
+        adamw_optimizer = torch.optim.AdamW(
+            adamw_params,
+            lr=adamw_base_lr,
+            weight_decay=adamw_weight_decay,
+            betas=adamw_betas,
+            eps=adamw_epsilon,
+            fused=True,
+        )
+
+        muon_optimizer = Muon(
+            muon_params,
+            lr=muon_base_lr,
+            weight_decay=muon_weight_decay,
+            momentum=muon_momentum,
+        )
+
+        optimizers = {
+            'AdamW' : adamw_optimizer,
+            'Muon' : muon_optimizer
+        }
+        for name, opt in optimizers.items():
+            for group in opt.param_groups:
+                group["base_lr"] = group["lr"] # set base_lr which will be multiplied by our learning rate multiplier `lrm` during training
+
+        return optimizers

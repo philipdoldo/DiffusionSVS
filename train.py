@@ -271,15 +271,16 @@ if __name__ == "__main__":
 
     # Learning Rate Schedule (Cosine Decay -- warmup + constant if you let min_lr = max_lr and cosine_decay_steps=0)
     warmup_steps = config["training"]["warmup_steps"]
-    max_lr = config["training"]["max_lr"]
-    min_lr = config["training"].get("min_lr", max_lr/10)
     cosine_decay_steps = config["training"].get("cosine_decay_steps", training_steps - warmup_steps)
-    if min_lr > max_lr:
-        raise ValueError(f"Expected to have `min_lr` <= `max_lr`, got: {min_lr=}, {max_lr=}")
+    min_lrm = config["training"].get("min_lrm", 1/10)
+    if min_lrm > 1:
+        raise ValueError(f"Expected to have `min_lrm` <= 1, got: {min_lrm=}")
     def cosine_lrm(step: int, warmup_steps: int, cosine_decay_steps: int, min_lrm: float):
         """
         learning rate multiplier schedule to simplify using different learning rates for different param groups with muon,
         also allows backwards compatibility with how lr was set previously -- I effectively normalized everything by `max_lr`
+        EDIT: nevermind, I'm replacing min_lr with `min_lrm` and `max_lr` is replaced by `adamw_base_lr`, so it won't be 
+        backwards compatible and I'm not changing the rest of this docstring, I think the main idea is pretty clear
 
         `step` is the iteration of training we're on, which is assumed to start at 0
         `warmup_steps` is the number of steps to do a linear warmup from `1/(warmup_steps+1)` to `warmup_steps/(warmup_steps+1)`
@@ -291,7 +292,6 @@ if __name__ == "__main__":
 
         For a constant lr schedule, let min_lrm=1 and cosine_decay_steps=0
         """
-
         if step < warmup_steps: # linear warmup for warmup_steps steps
             return (step + 1) / (warmup_steps + 1) # linearly increase to 1 (never quite reach 1 during warmup stage)
         elif cosine_decay_steps == 0:
@@ -304,7 +304,7 @@ if __name__ == "__main__":
         elif step >= warmup_steps + cosine_decay_steps: # after the cosine decay is done, return the minimum learning rate multiplier
             return min_lrm
 
-    get_lrm = partial(cosine_lrm, warmup_steps=warmup_steps, cosine_decay_steps=cosine_decay_steps, min_lrm=min_lr/max_lr) 
+    get_lrm = partial(cosine_lrm, warmup_steps=warmup_steps, cosine_decay_steps=cosine_decay_steps, min_lrm=min_lrm) 
 
     model_config = config["model"]
     diffusion_type = config['training']['diffusion'].get('diffusion_type')
@@ -414,23 +414,36 @@ if __name__ == "__main__":
     mel_pad_multiple = config['training'].get('mel_pad_multiple', 1)
     train_loader = NaiveDataLoader(data_path=train_data_path, batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"], diffusion_k=diffusion_k, stats_path=train_data_stats_path, diffusion_type=diffusion_type, mel_pad_multiple=mel_pad_multiple)
 
-    adamw_optimizer = torch.optim.AdamW(
-        model.parameters(),
-        weight_decay=config["training"]["AdamW_weight_decay"],
-        betas=config["training"]["AdamW_betas"],
-        eps=config["training"]["AdamW_epsilon"],
-        fused=True
+    # Setup optimizer(s)
+    if config['training'].get('use_muon', False):
+        if not hasattr(model, "setup_optimizers"):
+            raise ValueError(f"If using Muon, it's expected that a model with a `setup_optimizers` method is being used, {type(model)=}")
+        write0(f"Using Muon (and AdamW) optimizers\n", log_file=log_file)
+        orig_model = model.module if ddp else model # TODO does this give an error if using torch compile? if so, define orig_model before we use torch compile
+        optimizers = orig_model.setup_optimizers(
+            adamw_base_lr=config['training']['AdamW_base_lr'],
+            adamw_weight_decay=config["training"]["AdamW_weight_decay"], 
+            adamw_betas=config["training"]["AdamW_betas"], 
+            adamw_epsilon=config["training"]["AdamW_epsilon"], 
+            muon_base_lr=config['training']['Muon_base_lr'], 
+            muon_weight_decay=config['training']['Muon_weight_decay'], 
+            muon_momentum=config['training']['Muon_momentum']
         )
-    
-    # TODO need to set up param groups for the optimizers, need a 'base_lr' attribute as well for the params to multiply against lrm, maybe change max_lr and min_lr to adamw_max_lr or something idk idk idk idk idk idk idk idk idk
-
-    if config.get('use_muon'): # or something...... 
-        muon_optimizer = Muon() # TODO
     else:
-        muon_optimizer = None
+        write0(f"Only using AdamW optimizer\n", log_file=log_file)
+        adamw_optimizer = torch.optim.AdamW(
+            model.parameters(),
+            weight_decay=config["training"]["AdamW_weight_decay"],
+            betas=config["training"]["AdamW_betas"],
+            eps=config["training"]["AdamW_epsilon"],
+            fused=True
+            )
 
-    optimizers = {'AdamW' : adamw_optimizer, 'Muon' : muon_optimizer } # will use these dict key name to save optimizer states to checkpoints, need to be careful when we load them too # TODO
-    
+        optimizers = {'AdamW' : adamw_optimizer}
+        for name, opt in optimizers.items():
+            for param_group in opt.param_groups:
+                param_group["base_lr"] = config['training']['AdamW_base_lr'] # set base_lr which will be multiplied by our learning rate multiplier `lrm` during training
+
     ema = ExponentialMovingAverage(params=model.parameters(), decay=config["training"]["ema_decay"])
 
     loss_function = get_loss_function(config['training']['loss'])
@@ -456,7 +469,8 @@ if __name__ == "__main__":
         write0(f"GradScaler is enabled for fp16 training ({amp_dtype=}, {amp_enabled=})\n", log_file=log_file)
 
     if config["training"].get("resume_training", False):
-        optimizer.load_state_dict(checkpoint["optimizer"])
+        for name, opt in optimizers.items():
+            opt.load_state_dict(checkpoint["optimizer"][name])
         ema.load_state_dict(checkpoint["ema"], device=device)
 
         if rank == 0:
@@ -498,13 +512,17 @@ if __name__ == "__main__":
         # SAVE CHECKPOINTS
         if (step % checkpoint_interval == 0 or step == training_steps - 1):
             dataloader_state_dict = train_loader.get_state_dict() # need to call this on all ranks, then save all-gathered result on rank 0
+            optimizer_state_dicts = {}
+            for name, opt in optimizers.items():
+                optimizer_state_dicts[name] = opt.state_dict() # need to call this on all ranks for the Muon class
             if rank == 0:
                 torch.cuda.synchronize()
                 t0 = time.time()
+                
                 checkpoint = {
                     'step' : step,
                     'model' : model.module.state_dict() if ddp else model.state_dict(),
-                    'optimizer' : optimizer.state_dict(),
+                    'optimizer' : optimizer_state_dicts,
                     'dataloader' : dataloader_state_dict,
                     'ema' : {'ema_params' : ema.ema_params, 'decay' : ema.decay},
                     'rng_seeds' : prior_rng_seeds,
@@ -641,32 +659,37 @@ if __name__ == "__main__":
             dist.all_reduce(train_loss, op=dist.ReduceOp.AVG) # for logging
         
         lrm = get_lrm(step)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lrm * max_lr
+        for name, opt in optimizers.items():
+            for param_group in opt.param_groups:
+                param_group['lr'] = lrm * param_group['base_lr'] # base_lr was set for each param group when we defined the optimizers
 
         if scaler is not None:
-            scaler.unscale_(optimizer) # important that this is done before clip_grad_norm
+            for name, opt in optimizers.items():
+                scaler.unscale_(opt) # important that this is done before clip_grad_norm
             # In distributed training, all ranks must agree on whether to skip the step.
             # Each rank may independently encounter inf/nan gradients, so we all-reduce
             # the found_inf flag (MAX = if any rank found inf, all ranks skip).
             if dist.is_available() and dist.is_initialized():
-                for v in scaler._found_inf_per_device(optimizer).values():
-                    dist.all_reduce(v, op=dist.ReduceOp.MAX)
+                for name, opt in optimizers.items():
+                    for v in scaler._found_inf_per_device(opt).values():
+                        dist.all_reduce(v, op=dist.ReduceOp.MAX)
             norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm_threshold) # we need to do this after unscaling, otherwise it uses the scaled up values to determine if the clipping threshold has been reached
-            scaler.step(optimizer)
+            for name, opt in optimizers.items():
+                scaler.step(opt)
             scaler.update()
         else:
             norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm_threshold)
-            optimizer.step()
+            for name, opt in optimizers.items():
+                opt.step()
 
         ema.update(model.parameters())
         model.zero_grad(set_to_none=True)
         torch.cuda.synchronize()
         t1 = time.time()
 
-        write0(f"Step {step}:{' '*(8 - len(str(step)))}{(t1-t0)*1000:.0f}ms    train loss: {train_loss.item():.6f}    lr: {lr:.10f}    grad norm: {norm.item():.6f} \n", log_file=log_file)
+        write0(f"Step {step}:{' '*(8 - len(str(step)))}{(t1-t0)*1000:.0f}ms    train loss: {train_loss.item():.6f}    lrm: {lrm:.10f}    grad norm: {norm.item():.6f} \n", log_file=log_file)
         csv_val_loss = None if not computed_val_loss_this_iteration else val_loss.item()
-        write0(",".join(map(str, [step, train_loss.item(), csv_val_loss, lr, norm.item()])) + "\n", log_file=log_csv)
+        write0(",".join(map(str, [step, train_loss.item(), csv_val_loss, lrm, norm.item()])) + "\n", log_file=log_csv)
         # with open(log_file, 'a') as f:
         #     f.write(f"    {step=}    {rank=}   {batch['ph_padding_mask'].shape=}    {torch.sum(batch['ph_padding_mask'])=}    {batch['mel_padding_mask'].shape=}    {torch.sum(batch['mel_padding_mask'])=}\n")
 

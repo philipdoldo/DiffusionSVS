@@ -1,4 +1,4 @@
-# implementation copy and pasted from https://github.com/KellerJordan/Muon/blob/master/muon.py
+# implementation copy and pasted (with some edits) from https://github.com/KellerJordan/Muon/blob/master/muon.py
 import torch
 import torch.distributed as dist
 
@@ -67,6 +67,14 @@ class Muon(torch.optim.Optimizer):
         defaults = dict(lr=lr, weight_decay=weight_decay, momentum=momentum)
         assert isinstance(params, list) and len(params) >= 1 and isinstance(params[0], torch.nn.Parameter)
         params = sorted(params, key=lambda x: x.size(), reverse=True)
+
+        if dist.is_available() and dist.is_initialized():
+            self.world_size = dist.get_world_size()
+            self.rank = dist.get_rank()
+        else:
+            self.world_size = 1
+            self.rank = 0
+
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -79,10 +87,10 @@ class Muon(torch.optim.Optimizer):
 
         for group in self.param_groups:
             params = group["params"]
-            params_pad = params + [torch.empty_like(params[-1])] * (dist.get_world_size() - len(params) % dist.get_world_size())
-            for base_i in range(len(params))[::dist.get_world_size()]:
-                if base_i + dist.get_rank() < len(params):
-                    p = params[base_i + dist.get_rank()]
+            params_pad = params + [torch.empty_like(params[-1])] * (self.world_size - len(params) % self.world_size)
+            for base_i in range(len(params))[::self.world_size]:
+                if base_i + self.rank < len(params):
+                    p = params[base_i + self.rank]
                     if p.grad is None:
                         # continue
                         p.grad = torch.zeros_like(p)  # Force synchronization
@@ -92,9 +100,63 @@ class Muon(torch.optim.Optimizer):
                     update = muon_update(p.grad, state["momentum_buffer"], beta=group["momentum"])
                     p.mul_(1 - group["lr"] * group["weight_decay"])
                     p.add_(update.reshape(p.shape), alpha=-group["lr"])
-                dist.all_gather(params_pad[base_i:base_i + dist.get_world_size()], params_pad[base_i + dist.get_rank()])
+                if self.world_size > 1:
+                    dist.all_gather(params_pad[base_i:base_i + self.world_size], params_pad[base_i + self.rank])
 
         return loss
+    
+    @torch.no_grad()
+    def state_dict(self):
+        """
+        Collective op -- MUST be called on every rank (uses dist.broadcast internally),
+        even though only rank 0 will actually persist the result to disk. Returns an
+        identical, complete state dict on every rank.
+        """
+        param_groups_out = []
+        for group in self.param_groups:
+            params = group["params"]
+            momentum_buffers = []
+            for i, p in enumerate(params):
+                owning_rank = i % self.world_size
+                if self.rank == owning_rank:
+                    buf = self.state.get(p, {}).get("momentum_buffer", torch.zeros_like(p)).clone()
+                else:
+                    buf = torch.zeros_like(p)
+                if self.world_size > 1:
+                    dist.broadcast(buf, src=owning_rank)  # every rank ends up with the true buffer
+                momentum_buffers.append(buf.cpu())
+
+            group_out = {k: v for k, v in group.items() if k != "params"}
+            group_out["momentum_buffers"] = momentum_buffers
+            param_groups_out.append(group_out)
+
+        return {"param_groups": param_groups_out}
+
+    @torch.no_grad()
+    def load_state_dict(self, state_dict):
+        """
+        Must be called identically on every rank (e.g. every rank loads the same
+        checkpoint file). Restores momentum buffers only onto the rank that
+        currently owns each parameter -- robust even if world_size changed since
+        the checkpoint was saved, since every buffer was broadcast (saved) in full.
+        """
+        saved_groups = state_dict["param_groups"]
+        if len(saved_groups) != len(self.param_groups):
+            raise ValueError(f"Mismatched param group count: {len(saved_groups)=}, {len(self.param_groups)=}")
+
+        for group, saved_group in zip(self.param_groups, saved_groups):
+            params = group["params"]
+            momentum_buffers = saved_group["momentum_buffers"]
+            if len(momentum_buffers) != len(params):
+                raise ValueError(f"Mismatched param count: {len(momentum_buffers)=}, {len(params)=}")
+
+            for i, p in enumerate(params):
+                if i % self.world_size == self.rank:
+                    self.state[p] = {"momentum_buffer": momentum_buffers[i].to(p.device, p.dtype)}
+
+            for key, value in saved_group.items():
+                if key != "momentum_buffers":
+                    group[key] = value  # restores lr, momentum, weight_decay, base_lr, etc.
 
 
 class SingleDeviceMuon(torch.optim.Optimizer):
