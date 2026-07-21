@@ -269,7 +269,7 @@ if __name__ == "__main__":
     if config["model"]["vocab_size"] != len(vocab):
         raise ValueError(f"Dataset vocab size ({len(vocab)=}) does not match model vocab size ({config['model']['vocab_size']=}), used vocab from: {phoneme_vocab_path}")
 
-    # Learning Rate Schedule (Cosine Decay -- warmup + constant if you let min_lr = max_lr and cosine_decay_steps=0)
+    # Learning Rate Schedule (Cosine Decay -- warmup + constant if you let min_lrm = 1 and cosine_decay_steps=0)
     warmup_steps = config["training"]["warmup_steps"]
     cosine_decay_steps = config["training"].get("cosine_decay_steps", training_steps - warmup_steps)
     min_lrm = config["training"].get("min_lrm", 1/10)
@@ -396,6 +396,7 @@ if __name__ == "__main__":
     model = model.to(device)
     if ddp:
         model = DDP(model, device_ids=[local_rank])
+    orig_model = model.module if ddp else model
     
     if config['training'].get('use_torch_compile', False):
         dynamic = config['training'].get('torch_compile_dynamic', False)
@@ -416,10 +417,9 @@ if __name__ == "__main__":
 
     # Setup optimizer(s)
     if config['training'].get('use_muon', False):
-        if not hasattr(model, "setup_optimizers"):
-            raise ValueError(f"If using Muon, it's expected that a model with a `setup_optimizers` method is being used, {type(model)=}")
+        if not hasattr(orig_model, "setup_optimizers"):
+            raise ValueError(f"If using Muon, it's expected that a model with a `setup_optimizers` method is being used, {type(orig_model)=}")
         write0(f"Using Muon (and AdamW) optimizers\n", log_file=log_file)
-        orig_model = model.module if ddp else model # TODO does this give an error if using torch compile? if so, define orig_model before we use torch compile
         optimizers = orig_model.setup_optimizers(
             adamw_base_lr=config['training']['AdamW_base_lr'],
             adamw_weight_decay=config["training"]["AdamW_weight_decay"], 
