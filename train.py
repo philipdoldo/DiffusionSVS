@@ -376,7 +376,7 @@ if __name__ == "__main__":
         with open(log_file, 'w') as f:
             f.write("") # initialize log file
         with open(log_csv, 'w') as f:
-            f.write(",".join(["step", "train_loss", "val_loss", "lr", "grad_norm"]) + "\n") # initialize header for csv
+            f.write(",".join(["step", "train_loss", "val_loss", "lrm", "grad_norm"]) + "\n") # initialize header for csv
 
         with open(os.path.join(log_dir, "config.toml"), "w") as f:
             toml.dump(config, f) # save copy of config in log directory
