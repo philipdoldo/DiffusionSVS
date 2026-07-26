@@ -19,7 +19,8 @@ if __name__ == "__main__":
     for col, ylabel, suffix in [
     ("train_loss", "Training Loss", "train_loss"),
     ("val_loss", "Validation Loss", "val_loss"),
-    ("lr", "Learning Rate", "lr"),
+    #("lr", "Learning Rate", "lr"),
+    ("lrm", "Learning Rate Multiplier", "lrm"),
     ]:
         plot_df = df.dropna(subset=[col]) if col == "val_loss" else df
 
