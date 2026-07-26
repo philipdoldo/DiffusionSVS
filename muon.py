@@ -65,8 +65,19 @@ class Muon(torch.optim.Optimizer):
     """
     def __init__(self, params, lr=0.02, weight_decay=0, momentum=0.95):
         defaults = dict(lr=lr, weight_decay=weight_decay, momentum=momentum)
-        assert isinstance(params, list) and len(params) >= 1 and isinstance(params[0], torch.nn.Parameter)
+        #assert isinstance(params, list) and len(params) >= 1 and isinstance(params[0], torch.nn.Parameter)
         params = sorted(params, key=lambda x: x.size(), reverse=True)
+
+        if isinstance(params[0], dict):
+            # list of param-group dicts
+            for group in params:
+                assert isinstance(group["params"], list) and len(group["params"]) >= 1
+                assert isinstance(group["params"][0], torch.nn.Parameter)
+                group["params"] = sorted(group["params"], key=lambda x: x.size(), reverse=True)
+        else:
+            # flat list of Parameters
+            assert isinstance(params[0], torch.nn.Parameter)
+            params = sorted(params, key=lambda x: x.size(), reverse=True)
 
         if dist.is_available() and dist.is_initialized():
             self.world_size = dist.get_world_size()
