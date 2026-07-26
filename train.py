@@ -429,7 +429,8 @@ if __name__ == "__main__":
             adamw_epsilon=config["training"]["AdamW_epsilon"], 
             muon_base_lr=config['training']['Muon_base_lr'], 
             muon_weight_decay=config['training']['Muon_weight_decay'], 
-            muon_momentum=config['training']['Muon_momentum']
+            muon_momentum=config['training']['Muon_momentum'],
+            null_embedding_base_lr=config['training']['null_embedding_base_lr']
         )
     else:
         write0(f"Only using AdamW optimizer\n", log_file=log_file)
