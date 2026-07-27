@@ -573,7 +573,7 @@ class DiT(nn.Module):
                 raise ValueError(f"A CFG null embedding is part of this model, so we expect `null_mask` to be a boolean tensor of shape (batch_size,). Got {null_mask=}")
             if null_mask.shape[0] != B or null_mask.dtype != torch.bool:
                 raise ValueError(f"{B=}, {null_mask.shape=}, {null_mask.dtype=} (expected `torch.bool` dtype with shape [{B}])")
-            null_emb = self.null_embedding(torch.tensor([0])) # shape (d,)
+            null_emb = self.null_embedding(torch.tensor([0], device=music_score_emb.device)) # shape (d,)
             music_score_emb[null_mask] = null_emb # this should get broadcasted properly to replace each (T, d) shaped thing with `null_emb` repeated T times
             print(f"{null_emb.shape=}, {music_score_emb.shape=}, {null_mask=}, {null_emb=}, {music_score_emb=}")
         attn_mask = torch.logical_not(mel_padding_mask) # (B, T)
