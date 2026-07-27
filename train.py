@@ -573,7 +573,7 @@ if __name__ == "__main__":
                                 mel_padding_mask=val_batch['mel_padding_mask'],
                                 mel=val_interpolant, 
                                 t=val_batch['t'],
-                                null_mask=val_batch['null_embedding_mask']
+                                null_mask=val_batch.get('null_embedding_mask')
                                 )
                             val_loss = loss_function(target=val_target, pred=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
                         elif config['model']['model_type'] == "EncoderDecoder":
@@ -637,7 +637,7 @@ if __name__ == "__main__":
                         mel_padding_mask=batch['mel_padding_mask'],
                         mel=interpolant, 
                         t=batch['t'],
-                        null_mask=batch['null_embedding_mask']
+                        null_mask=batch.get('null_embedding_mask')
                         )
                     loss = loss_function(target=target, pred=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
                 elif config['model']['model_type'] == "EncoderDecoder":
