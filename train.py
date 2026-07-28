@@ -97,7 +97,7 @@ class SimpleFlow:
                     v = (1-cfg_scale) * model_output_unconditioned + cfg_scale * model_output_conditioned
 
                     
-                M_t = M_t + step_size * model_output # forward euler update, model_output is the vector field F of an ODE dM_t/dt = F(t, M_t) with initial condition M_0 ~ N(0, I)
+                M_t = M_t + step_size * v # forward euler update, v is the vector field F of an ODE dM_t/dt = F(t, M_t) with initial condition M_0 ~ N(0, I)
                 t += step_size
         return M_t # generated mel-spectrogram
 
