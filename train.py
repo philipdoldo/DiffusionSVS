@@ -34,7 +34,7 @@ class SimpleFlow:
         interpolant = t * mel + (1-t) * epsilon # at t=0, we have pure noise, at t=1 pure data
         return interpolant # this is the "noisy" mel-spectrogram that we input into the denoiser
 
-    def sample(self, model, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, M=80, num_iter=100):
+    def sample(self, model, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, M=80, num_iter=100, cfg_scale=None):
         """
         `model` is the denoiser, e.g. a WaveNetDenoiser class object
         
@@ -63,8 +63,8 @@ class SimpleFlow:
             t = torch.zeros(B, dtype=torch.float32, device=self.device) # shape (B,) -- batch of times from t=0 (pure noise)
             step_size = 1 / num_iter
             for i in range(num_iter):
-                
-                model_output = model(
+
+                model_output_conditioned = model(
                     txt_tokens=txt_tokens, 
                     mel2ph=mel2ph,
                     f0=f0,
@@ -74,7 +74,24 @@ class SimpleFlow:
                     mel=M_t, 
                     t=t
                     )
-                
+
+                if cfg_scale is None:
+                    v = model_output_conditioned
+                else:
+                    model_output_unconditioned = model(
+                        txt_tokens=txt_tokens, 
+                        mel2ph=mel2ph,
+                        f0=f0,
+                        uv=uv, 
+                        ph_padding_mask=ph_padding_mask, 
+                        mel_padding_mask=mel_padding_mask,
+                        mel=M_t, 
+                        t=t,
+                        null_mask=torch.tensor([1], dtype=torch.bool)
+                        )
+                    v = (1-cfg_scale) * model_output_unconditioned + cfg_scale * model_output_conditioned
+
+                    
                 M_t = M_t + step_size * model_output # forward euler update, model_output is the vector field F of an ODE dM_t/dt = F(t, M_t) with initial condition M_0 ~ N(0, I)
                 t += step_size
         return M_t # generated mel-spectrogram
