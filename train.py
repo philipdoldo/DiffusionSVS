@@ -64,10 +64,6 @@ class SimpleFlow:
             step_size = 1 / num_iter
             for i in range(num_iter):
 
-                if cfg_scale is None:
-                    null_mask = None
-                else:
-                    null_mask = torch.tensor([0], dtype=torch.bool) # if conditioning on the music score, we want this to be False because True would make it mask the music score embeddings with null embeddings
                 model_output_conditioned = model(
                     txt_tokens=txt_tokens, 
                     mel2ph=mel2ph,
@@ -77,7 +73,7 @@ class SimpleFlow:
                     mel_padding_mask=mel_padding_mask,
                     mel=M_t, 
                     t=t,
-                    null_mask=null_mask
+                    null_mask=torch.tensor([0], dtype=torch.bool) # if conditioning on the music score, we want this to be False because True would make it mask the music score embeddings with null embeddings
                     )
 
                 if cfg_scale is None:
