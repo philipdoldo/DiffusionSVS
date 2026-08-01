@@ -448,7 +448,7 @@ class WaveNetDenoiser(nn.Module):
         self.encoder = MusicScoreEncoder(config)
         self.denoiser = WaveNet(config)
     
-    def forward(self, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, mel, t):
+    def forward(self, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, mel, t, **kwargs): # adding **kwargs to not get error in training loop if we feed in args like `null_mask` as is done with DiT
         encoder_outputs = self.encoder(txt_tokens=txt_tokens, mel2ph=mel2ph, f0=f0, uv=uv, ph_padding_mask=ph_padding_mask, mel_padding_mask=mel_padding_mask)
         denoiser_outputs = self.denoiser(mel=mel, t=t, cond=encoder_outputs)
         return denoiser_outputs
@@ -519,7 +519,10 @@ class DiT(nn.Module):
 
     def __init__(self, config):
         super().__init__()
+        self.config = config
         self.music_score_encoder = MusicScoreEncoder(config)
+        if config.get('use_cfg_null_embedding', False):
+            self.null_embedding = nn.Embedding(1, config['embedding_dim']) # a single null embedding to be compatible with CFG
         self.patchify = config.get('patchify', False)
         self.patch_size = config.get('patch_size', 1)
         if self.patch_size != 1 and not self.patchify:
@@ -547,9 +550,15 @@ class DiT(nn.Module):
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
 
-    def forward(self, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, mel, t):
+    def forward(self, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, mel, t, null_mask=None):
         """
         The time embedding gets treated as the conditional embedding. The music score embeddings are used during cross attention.
+
+        `null_mask` is a boolean tensor of shape (batch_size,) (if not `None`) and is used for classifier-free guidance (CFG). If
+        a batch index `b` corresponds to `True` (i.e. `null_mask[b]` is `True`), then we replace the outputs of the music score encoder
+        (which have shape (B, T, d)) with a sequence of T learned null embeddings (each null embedding has shape (d,)). We will only have
+        a single learned null embedding, so we will repeat it T times in this case, so `music_score_emb[b, :, :]` will be the null
+        embedding repeated T times, for example.
         """
         B, M, T = mel.shape 
         if self.patchify and T % self.patch_size != 0:
@@ -559,6 +568,13 @@ class DiT(nn.Module):
         cos_sin = self.cos, self.sin
 
         music_score_emb = self.music_score_encoder(txt_tokens=txt_tokens, mel2ph=mel2ph, f0=f0, uv=uv, ph_padding_mask=ph_padding_mask, mel_padding_mask=mel_padding_mask) # (B, T, d)
+        if self.config.get('use_cfg_null_embedding', False):
+            if null_mask is None:
+                raise ValueError(f"A CFG null embedding is part of this model, so we expect `null_mask` to be a boolean tensor of shape (batch_size,). Got {null_mask=}")
+            if null_mask.shape[0] != B or null_mask.dtype != torch.bool:
+                raise ValueError(f"{B=}, {null_mask.shape=}, {null_mask.dtype=} (expected `torch.bool` dtype with shape [{B}])")
+            null_emb = self.null_embedding(torch.tensor([0], device=music_score_emb.device)) # shape (1, d)
+            music_score_emb[null_mask] = null_emb # this should get broadcasted properly to replace each (T, d) shaped thing with `null_emb` repeated T times
         attn_mask = torch.logical_not(mel_padding_mask) # (B, T)
         if self.patchify:
             music_score_emb = self.music_score_patchify_proj( music_score_emb.transpose(-1, -2) ).transpose(-1, -2) # (B, T//p, d), patchify to go from T to T//p sequence length
@@ -583,7 +599,7 @@ class DiT(nn.Module):
         output = x.transpose(-1, -2) # (B, M, T)
         return output
 
-    def setup_optimizers(self, adamw_base_lr, adamw_weight_decay, adamw_betas, adamw_epsilon, muon_base_lr, muon_weight_decay=0, muon_momentum=0.95):
+    def setup_optimizers(self, adamw_base_lr, adamw_weight_decay, adamw_betas, adamw_epsilon, muon_base_lr, muon_weight_decay=0, muon_momentum=0.95, null_embedding_base_lr=None):
         """
         Splits parameters into Muon (hidden 2D matmul weights) and AdamW (embeddings,
         input/output projections, adaLN modulation, scalar-input projections, biases)
@@ -603,6 +619,7 @@ class DiT(nn.Module):
         muon_params, adamw_params = [], []
         seen = set()
 
+        # Collect Muon params
         for module in self.modules():
             if isinstance(module, (nn.Linear, nn.Conv1d)):
                 if module.weight.ndim >= 2 and module not in adamw_modules: # use muon for intermediate matrix parameters
@@ -610,18 +627,32 @@ class DiT(nn.Module):
                         muon_params.append(module.weight)
                         seen.add(id(module.weight))
 
+        # Collect cfg null embedding params
+        use_cfg_null_embedding = self.config.get('use_cfg_null_embedding', False)
+        if use_cfg_null_embedding:
+            if null_embedding_base_lr is None:
+                raise ValueError(f"Got {null_embedding_base_lr=}, but it should not be `None`")
+            seen.add(id(self.null_embedding.weight))  # avoid adding to adamw_params so we can set its own base_lr
+
+        # Collect AdamW params
         for name, p in self.named_parameters():
             if id(p) not in seen:
                 adamw_params.append(p)
                 seen.add(id(p))
 
         total = sum(p.numel() for p in self.parameters())
-        split_total = sum(p.numel() for p in muon_params) + sum(p.numel() for p in adamw_params)
+        split_total = sum(p.numel() for p in muon_params) + sum(p.numel() for p in adamw_params) + (self.null_embedding.weight.numel() if use_cfg_null_embedding else 0)
         assert total == split_total, f"{total=} != {split_total=}, param split is missing or double-counting params"
 
+        # I don't need to set the `lr` for these because they'll get overwritten properly in the training loop, but I'm setting them anyway, setting `base_lr` is what really matters
+        adamw_groups = [{"params": adamw_params, "base_lr": adamw_base_lr, "lr": adamw_base_lr}]
+        if use_cfg_null_embedding:
+            adamw_groups.append({"params": [self.null_embedding.weight], "base_lr": null_embedding_base_lr, "lr": null_embedding_base_lr})
+        muon_groups = [{"params": muon_params, "base_lr": muon_base_lr, "lr": muon_base_lr}]
+
+        # We don't have to worry about the optimizers setting the default `lr` for the params because when training we will use `base_lr` to set the `lr`
         adamw_optimizer = torch.optim.AdamW(
-            adamw_params,
-            lr=adamw_base_lr,
+            adamw_groups,
             weight_decay=adamw_weight_decay,
             betas=adamw_betas,
             eps=adamw_epsilon,
@@ -629,8 +660,7 @@ class DiT(nn.Module):
         )
 
         muon_optimizer = Muon(
-            muon_params,
-            lr=muon_base_lr,
+            muon_groups,
             weight_decay=muon_weight_decay,
             momentum=muon_momentum,
         )
@@ -639,8 +669,5 @@ class DiT(nn.Module):
             'AdamW' : adamw_optimizer,
             'Muon' : muon_optimizer
         }
-        for name, opt in optimizers.items():
-            for group in opt.param_groups:
-                group["base_lr"] = group["lr"] # set base_lr which will be multiplied by our learning rate multiplier `lrm` during training
 
         return optimizers

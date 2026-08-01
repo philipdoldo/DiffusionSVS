@@ -22,6 +22,7 @@ if __name__ == "__main__":
     parser.add_argument("--ema", action=argparse.BooleanOptionalAction, default=True, help="Whether or not to use EMA weights")
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--num_iter", type=int, default=100)
+    parser.add_argument("--cfg_scale", type=float, default=None)
 
     args = parser.parse_args()
 
@@ -124,6 +125,7 @@ if __name__ == "__main__":
             mel_padding_mask=batch['mel_padding_mask'],
             M=80,
             num_iter=args.num_iter,
+            cfg_scale=args.cfg_scale
             )
         
     
@@ -160,6 +162,8 @@ if __name__ == "__main__":
         output_name += f"-EMA"
     if use_num_iter:
         output_name += f"-N={args.num_iter}"
+    if args.cfg_scale is not None:
+        output_name += f"-CFG={args.cfg_scale}"
     output_name += ".wav"
     output_path = output_dir / output_name
     sf.write(output_path, audio, samplerate=vocoder_config["audio_sample_rate"])

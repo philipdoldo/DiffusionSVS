@@ -98,6 +98,8 @@ class NaiveDataLoader:
         stats_path: str = None, # .npz files
         diffusion_type: str = None,
         mel_pad_multiple: int = 1,
+        use_cfg_null_embedding: bool = False,
+        null_embedding_probability: float = 0.1
     ):
         self.data_path = data_path
         with h5py.File(data_path, "r") as f:
@@ -108,6 +110,8 @@ class NaiveDataLoader:
         self.collate_fn = partial(collate_fn, mel_pad_multiple=mel_pad_multiple)
         self.diffusion_k = diffusion_k
         self.diffusion_type = diffusion_type
+        self.use_cfg_null_embedding = use_cfg_null_embedding # if True, then we will return a `null_mask` in our batch which has shape (batch_size,) where each entry is True if we use null embeddings (for CFG, see DiT model definition) and False otherwise 
+        self.null_embedding_probability = null_embedding_probability # probability used to define the `null_mask`, e.g. a value of 0.1 means each entry will be true with probability 0.1 and False with probability 0.9
 
         ##### Validate that the inputted diffusion_type is consistent with other input arguments
         self.DIFF_SINGER_DIFFUSION = "DiffSingerDiffusion"
@@ -195,6 +199,11 @@ class NaiveDataLoader:
         elif self.diffusion_type == self.SIMPLE_FLOW:
             t = torch.rand(size=(self.batch_size,)) # batch of random times in [0, 1]
             batch['t'] = t
+
+        if self.use_cfg_null_embedding:
+            if not 0 <= self.null_embedding_probability <= 1:
+                raise ValueError(f"Probability should be in [0,1] but got {self.null_embedding_probability=}")
+            batch['null_embedding_mask'] = torch.rand(self.batch_size) < self.null_embedding_probability # each entry is True with prob p, False with prob 1-p
 
         collated_batch = self.collate_fn(batch, padding_value=self.padding_value, stats=self.stats)
 

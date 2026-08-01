@@ -34,7 +34,7 @@ class SimpleFlow:
         interpolant = t * mel + (1-t) * epsilon # at t=0, we have pure noise, at t=1 pure data
         return interpolant # this is the "noisy" mel-spectrogram that we input into the denoiser
 
-    def sample(self, model, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, M=80, num_iter=100):
+    def sample(self, model, txt_tokens, mel2ph, f0, uv, ph_padding_mask, mel_padding_mask, M=80, num_iter=100, cfg_scale=None):
         """
         `model` is the denoiser, e.g. a WaveNetDenoiser class object
         
@@ -63,8 +63,8 @@ class SimpleFlow:
             t = torch.zeros(B, dtype=torch.float32, device=self.device) # shape (B,) -- batch of times from t=0 (pure noise)
             step_size = 1 / num_iter
             for i in range(num_iter):
-                
-                model_output = model(
+
+                model_output_conditioned = model(
                     txt_tokens=txt_tokens, 
                     mel2ph=mel2ph,
                     f0=f0,
@@ -72,10 +72,28 @@ class SimpleFlow:
                     ph_padding_mask=ph_padding_mask, 
                     mel_padding_mask=mel_padding_mask,
                     mel=M_t, 
-                    t=t
+                    t=t,
+                    null_mask=torch.tensor([0], dtype=torch.bool) # if conditioning on the music score, we want this to be False because True would make it mask the music score embeddings with null embeddings
                     )
-                
-                M_t = M_t + step_size * model_output # forward euler update, model_output is the vector field F of an ODE dM_t/dt = F(t, M_t) with initial condition M_0 ~ N(0, I)
+
+                if cfg_scale is None:
+                    v = model_output_conditioned
+                else:
+                    model_output_unconditioned = model(
+                        txt_tokens=txt_tokens, 
+                        mel2ph=mel2ph,
+                        f0=f0,
+                        uv=uv, 
+                        ph_padding_mask=ph_padding_mask, 
+                        mel_padding_mask=mel_padding_mask,
+                        mel=M_t, 
+                        t=t,
+                        null_mask=torch.tensor([1], dtype=torch.bool)
+                        )
+                    v = (1-cfg_scale) * model_output_unconditioned + cfg_scale * model_output_conditioned
+
+                    
+                M_t = M_t + step_size * v # forward euler update, v is the vector field F of an ODE dM_t/dt = F(t, M_t) with initial condition M_0 ~ N(0, I)
                 t += step_size
         return M_t # generated mel-spectrogram
 
@@ -413,7 +431,9 @@ if __name__ == "__main__":
     write0(f"Model Parameters: {num_params:,}\nTrainable Model Parameters: {num_trainable_params:,}\n", log_file=log_file)
 
     mel_pad_multiple = config['training'].get('mel_pad_multiple', 1)
-    train_loader = NaiveDataLoader(data_path=train_data_path, batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"], diffusion_k=diffusion_k, stats_path=train_data_stats_path, diffusion_type=diffusion_type, mel_pad_multiple=mel_pad_multiple)
+    use_cfg_null_embedding = config['model'].get('use_cfg_null_embedding', False)
+    null_embedding_probability = config['training'].get('null_embedding_probability')
+    train_loader = NaiveDataLoader(data_path=train_data_path, batch_size=batch_size, padding_value=config["model"]["pad_token_id"], rng_seed=config["training"]["rng_seed"], diffusion_k=diffusion_k, stats_path=train_data_stats_path, diffusion_type=diffusion_type, mel_pad_multiple=mel_pad_multiple, use_cfg_null_embedding=use_cfg_null_embedding, null_embedding_probability=null_embedding_probability)
 
     # Setup optimizer(s)
     if config['training'].get('use_muon', False):
@@ -427,7 +447,8 @@ if __name__ == "__main__":
             adamw_epsilon=config["training"]["AdamW_epsilon"], 
             muon_base_lr=config['training']['Muon_base_lr'], 
             muon_weight_decay=config['training']['Muon_weight_decay'], 
-            muon_momentum=config['training']['Muon_momentum']
+            muon_momentum=config['training']['Muon_momentum'],
+            null_embedding_base_lr=config['training'].get('null_embedding_base_lr')
         )
     else:
         write0(f"Only using AdamW optimizer\n", log_file=log_file)
@@ -541,7 +562,7 @@ if __name__ == "__main__":
                 t0 = time.time()
                 model.eval()
                 rng_state = torch.get_rng_state() # val might change rng state on rank 0, so save and restore it just in case, probably not very important
-                val_loader = NaiveDataLoader(data_path=val_data_path, batch_size=min(batch_size, config['training'].get('val_dataset_length', 24)), padding_value=config["model"]["pad_token_id"], diffusion_k=diffusion_k, stats_path=train_data_stats_path, diffusion_type=diffusion_type, mel_pad_multiple=mel_pad_multiple) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
+                val_loader = NaiveDataLoader(data_path=val_data_path, batch_size=min(batch_size, config['training'].get('val_dataset_length', 24)), padding_value=config["model"]["pad_token_id"], diffusion_k=diffusion_k, stats_path=train_data_stats_path, diffusion_type=diffusion_type, mel_pad_multiple=mel_pad_multiple, use_cfg_null_embedding=use_cfg_null_embedding, null_embedding_probability=null_embedding_probability) # Should be reinitialized with same rng seed every time. Also notice how I intentionally use the default rng seed for val loader so that it never changes even when I resume training with a new rng seed in my config
                 val_loader.reset() # should be unnecessary
 
                 ema.store(model.parameters()) # store copy of the actual model weights
@@ -569,7 +590,8 @@ if __name__ == "__main__":
                                 ph_padding_mask=val_batch['ph_padding_mask'], 
                                 mel_padding_mask=val_batch['mel_padding_mask'],
                                 mel=val_interpolant, 
-                                t=val_batch['t']
+                                t=val_batch['t'],
+                                null_mask=val_batch.get('null_embedding_mask')
                                 )
                             val_loss = loss_function(target=val_target, pred=val_model_output, mel_padding_mask=val_batch['mel_padding_mask'])
                         elif config['model']['model_type'] == "EncoderDecoder":
@@ -632,7 +654,8 @@ if __name__ == "__main__":
                         ph_padding_mask=batch['ph_padding_mask'], 
                         mel_padding_mask=batch['mel_padding_mask'],
                         mel=interpolant, 
-                        t=batch['t']
+                        t=batch['t'],
+                        null_mask=batch.get('null_embedding_mask')
                         )
                     loss = loss_function(target=target, pred=model_output, mel_padding_mask=batch['mel_padding_mask']) / grad_accum_steps
                 elif config['model']['model_type'] == "EncoderDecoder":
