@@ -9,7 +9,6 @@ import toml
 import json
 import h5py
 import os
-import math
 from datetime import datetime
 from pathlib import Path
 from tqdm import tqdm
@@ -215,7 +214,8 @@ def process_utterance(
     starts = [int(np.round(iv.start_sec * audio_config["sample_rate"] / audio_config["hop_size"])) for iv in intervals]
     ends = starts[1:] + [T]
 
-    assert starts[0] == 0, f"{starts=}"
+    if starts[0] != 0:
+        raise BinarizationError(f"first phoneme interval doesn't start at 0 ({starts[0]=}, {example.phone_intervals[0].start_sec=})")
 
     mel2ph = np.zeros(T, dtype=np.int32)
     for i, (s, e) in enumerate(zip(starts, ends)):
@@ -224,11 +224,11 @@ def process_utterance(
     starts_ok = _is_nondecreasing(starts)
     ends_ok = _is_nondecreasing(ends)
     mel2ph_ok = _is_nondecreasing(mel2ph)
-    final_ok = mel2ph.max() == len(txt_tokens) - 1
+    final_ok = bool(mel2ph.max() == len(txt_tokens) - 1)
 
     if not (starts_ok and ends_ok and mel2ph_ok and final_ok):
         # skip if the data isn't formatted properly, e.g. `popcs/popcs-爱你十分泪七分/0015.TextGrid` has final xmax of 11.819999999999993 but `/popcs/popcs-爱你十分泪七分/0015_wf0.wav` is only 11.42328798185941 seconds
-        raise BinarizationError(f"{example.utterance_id}: {starts_ok=}, {ends_ok=}, {mel2ph_ok=}, {final_ok=}, {mel2ph.max()=}, {len(txt_tokens)=}, {T=}, {starts[:3]=}, {starts[-3:]=}, {ends[:3]=}, {ends[-3:]=}")
+        raise BinarizationError(f"{starts_ok=}, {ends_ok=}, {mel2ph_ok=},  {final_ok=}, {mel2ph.max()=}, {len(txt_tokens)=}, {T=}, {starts[:3]=}, {starts[-3:]=}, {ends[:3]=}, {ends[-3:]=}, {example.phone_intervals[0]=}, {example.phone_intervals[-1]=}")
 
     # max_mel_frames = config["data"].get("max_mel_frames") # truncate to max_mel_frames
     # if max_mel_frames is not None and T > max_mel_frames:
@@ -245,65 +245,6 @@ def process_utterance(
         "mel2ph":     mel2ph,     # int32   (T,)
         "txt_tokens": txt_tokens, # int32   (P,)
     }
-
-
-# def compute_segment_boundaries(phone_intervals, min_sec, max_sec):
-#     """
-#     Splits one utterance's phone_intervals into segments, each between `min_sec` and `max_sec` seconds long.
-
-#     Returns a list of (start_idx, end_idx) pairs. Each pair is a range of indices into
-#     phone_intervals -- start_idx is inclusive, end_idx is exclusive (so phone_intervals[start_idx:end_idx]
-#     is one segment's phonemes). Every cut falls exactly on a boundary between two phonemes, so no
-#     single phoneme interval ever gets split across two segments.
-
-#     How it picks the cuts:
-#       1. Compute how many segments we need: the smallest number N such that (total duration / N)
-#          is <= max_sec. E.g. a 31 second utterance with max_sec=15 needs N=3, giving ~10.3s each --
-#          not 15+15+1, which would leave an undersized last piece if e.g. min_sec=5.
-#       2. Divide the utterance into N equal-length pieces of that target length.
-#       3. For each of the N-1 internal cut points, don't cut at the exact target time (that would
-#          likely land in the middle of a phoneme) -- instead cut at whichever phoneme boundary is
-#          closest to that target time, searching only *after* the previous cut (so cuts can't go
-#          backwards or land on top of each other).
-
-#     This only guarantees every segment is >= min_sec if max_sec >= 2 * min_sec. (If that weren't
-#     true, going from 1 segment to 2 could produce two pieces each under min_sec.) There's a check
-#     below enforcing this -- don't change min_sec/max_sec without checking it still holds.
-#     """
-#     if max_sec < 2 * min_sec:
-#         raise ValueError(f"{max_sec=} must be >= 2 * {min_sec=} for the length guarantee to hold")
-
-#     total_dur = phone_intervals[-1].end_sec - phone_intervals[0].start_sec
-#     if total_dur <= max_sec:
-#         return [(0, len(phone_intervals))]  # short enough already, don't split
-
-#     num_segments = math.ceil(total_dur / max_sec)
-#     target_len = total_dur / num_segments
-#     base = phone_intervals[0].start_sec
-
-#     cut_indices = [0]
-#     for k in range(1, num_segments):
-#         target_time = base + k * target_len
-#         search_start = cut_indices[-1] + 1  # never consider a boundary at or before the previous cut
-#         if search_start >= len(phone_intervals):
-#             raise BinarizationError(f"ran out of phoneme intervals to cut at while placing segment {k}/{num_segments} -- {cut_indices=}")
-#         best_idx = min(range(search_start, len(phone_intervals)), key=lambda i: abs(phone_intervals[i].start_sec - target_time)) # index of the interval whose start is closest to target_time
-#         cut_indices.append(best_idx)
-#     cut_indices.append(len(phone_intervals))
-#     assert len(cut_indices) == len(set(cut_indices)), f"duplicate cut index: {cut_indices=}"
-#     assert cut_indices == sorted(cut_indices), f"cut_indices not sorted: {cut_indices=}"
-
-#     boundaries = list(zip(cut_indices, cut_indices[1:]))
-
-#     # if a phoneme interval is sufficiently long, then it isn't guaranteed that each segment is less than max_sec seconds, so we check here if this is ever an issue
-#     hard_limit = max_sec
-#     for s, e in boundaries:
-#         dur = phone_intervals[e - 1].end_sec - phone_intervals[s].start_sec
-#         if dur > hard_limit:
-#             raise BinarizationError(f"segment [{s}:{e}] is {dur:.1f}s, exceeds hard limit {hard_limit:.1f}s -- likely a pathologically long phoneme interval near a cut target")
-#     return boundaries
-
-
 
 
 def compute_segment_boundaries(phone_intervals, min_sec, max_sec):
@@ -493,7 +434,7 @@ class BinarizationError(Exception):
 
 
 def _is_nondecreasing(arr):
-    return np.all(np.diff(arr) >= 0)
+    return bool(np.all(np.diff(arr) >= 0))
 
 
 def compute_and_save_stats(split: str, save_dir: Path, log_file):
