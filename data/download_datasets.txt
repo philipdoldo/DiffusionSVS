@@ -12,7 +12,7 @@ Namine Ritsu [RITSU] : https://drive.google.com/file/d/1kXkbOithwn6BkAVLfZ1r1tU-
 PopCS [POPCS] : https://drive.google.com/file/d/1uFJmPEUWbzguGBdiuupYvYbBEjopN-Xq/view?usp=sharing
 **??? [SUNG_AND_SPOKEN] : idk I can't find it? not listed in https://github.com/openvpi/MakeDiffSinger/wiki/Public-datasets
 GTSinger [GTSINGER_CHINESE, GTSINGER_ENGLISH, GTSINGER_JAPANESE] : https://drive.google.com/drive/folders/1xcdvCxNAEEfJElt7sEP-xT8dMKxn1_Lz
-Amaboshi Cipher [AMABOSHI_CIPHERDB] : you have to go here https://bowlroll.net/file/268697 and click the Download button
+Amaboshi Cipher [AMABOSHI_CIPHERDB] : you have to go here https://bowlroll.net/file/268697 and click the Download button -- can instead use https://drive.google.com/file/d/1xfQuL9om6z08tU1NP35QESkyIHdmAhnm/view?usp=sharing
 Kurotake Kouga [KUROTAKE_KOUGA_AI_SONG] : https://drive.google.com/file/d/1fHcvanFSDQEdse2onG_DyYHiB6ZdI1Jn/view
 Ofuton P [OFUTON_P_UTAGOE_DB] : go to think link and click Download https://www.dropbox.com/scl/fi/vnz3v19hzdvq085t9r0th/OFUTON_P_UTAGOE_DB.zip?rlkey=0qv5ewcoeqquejiefa582nd5a&e=1&dl=0 
 Oniku Kurumi [ONIKU_KURUMI_UTAGOE_DB] : https://drive.google.com/file/d/17VOlqPKT7ssnOTCp6_ZBIWht1-h8FAt7/view?usp=sharing
