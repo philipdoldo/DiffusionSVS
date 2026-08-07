@@ -1,4 +1,18 @@
 """
+NOTE: This file is basically just legacy code for dealing with PopCS and other Chinese datasets because the
+phoneme labels in the TextGrid files tend to be consistently labeled, but when dealing with other languages
+such as Japanese sometimes different phoneme labels correspond to the same phoneme, so the `svs_datasets` code
+(which is not used in this file, but is instead used in the main `binarize.py`) is used to get consistent
+phoneme labels for these datasets. The only reason this file still exists in this repo is because this repo
+was originally created with the goal of (approximately) replicating DiffSinger and I want to keep some
+binarization code that doesn't rely on `svs_datasets` just so that the repo has a way of (approximately)
+replicating DiffSinger without any additional abstractions. This code simply parses the TextGrid files instead
+of using `svs_datasets` and this code does not handling splitting audio files into shorter sequences as this
+was not necessary when working with PopCS (which is what DiffSinger was trained on).
+
+In practice, use `binarize.py` instead of this code.
+
+
 First, we create splits and a phoneme vocabulary using the `build_phoneme_vocab` and `build_splits` functions.
 This script parses all of the TextGrid files found under `raw_data_dirs` (recursively, at any depth) to build
 a phoneme vocabulary which includes special tokens. This vocabulary is saved in `<save_dir>/vocab.json`.
@@ -56,6 +70,7 @@ The splits are stored in `<save_dir>/splits.json`.
     We handle these cases by replacing the empty string with the silence token SP if the interval isn't the first or last interval. If it is,
     then we replace the empty string with <BOS> if it is the first interval and <EOS> if it is the last interval.
 """
+from third_party.svs_datasets.code import  CanonicalExample, Dataset, Interval, NoteInterval, load_dataset
 import numpy as np
 import librosa
 import parselmouth

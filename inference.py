@@ -10,7 +10,7 @@ import argparse
 import soundfile as sf
 from pathlib import Path
 from modules.hifigan.hifigan import HifiGanGenerator
-from data.dataloader import NaiveDataLoader
+from dataloader import NaiveDataLoader
 from model import WaveNetDenoiser, DiT
 from train import DiffSingerDiffusion, SimpleFlow
 from exponential_moving_average import ExponentialMovingAverage

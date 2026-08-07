@@ -1,0 +1,103 @@
+# default config for binarizing PopCS data
+
+[audio]
+sample_rate = 24000
+hop_size = 128
+window_size = 512
+n_mels = 80
+min_freq = 30 # Hz
+max_freq = 12000 # Hz
+mel_center = true # default in librosa
+mel_log_clip = 1e-6
+
+[f0]
+extractor = "parselmouth"   # "parselmouth" | "harvest"
+f0_min    = 50.0
+f0_max    = 1100.0
+
+[data]
+save_dir = "/home/phil/DiffusionSVS/binarized_data"
+min_sec = 2.5
+max_sec = 15
+
+ALEX_FLOAREA_AI_SVS_path = "/home/phil/DiffusionSVS/data/AlexFloarea-AI-SVS-main/AlexFloarea-AI-SVS-main"
+ALEX_FLOAREA_EN_PUBLIC_path = "/home/phil/DiffusionSVS/data/Alex_Floarea_EN_Public_Corpus"
+PROJECT_AIDOL_PUBLIC_ENGLISH_path = "/home/phil/DiffusionSVS/data/Project-AIdol-Public-English-Dataset-master/Project-AIdol-Public-English-Dataset-master"
+NGYY_path = "/home/phil/DiffusionSVS/data/NGYY_ENG_Dataset-main/NGYY_ENG_Dataset-main"
+OPEN_CPOP_path = "/home/phil/DiffusionSVS/data/opencpop"
+M4SINGER_path = "/home/phil/DiffusionSVS/data/m4singer/m4singer"
+NO7SINGING_path = "/home/phil/DiffusionSVS/data/no7singing"
+RITSU_path = "/home/phil/DiffusionSVS/data/ritsu/「波音リツ」歌声データベースVer2.0.2"
+POPCS_path = "/home/phil/DiffusionSVS/data/popcs"
+SUNG_AND_SPOKEN_path = "/home/phil/DiffusionSVS/data/sungandspoken"
+GTSINGER_ENGLISH_path = "/home/phil/DiffusionSVS/data/gtsinger/English-005/English"
+GTSINGER_CHINESE_path = "/home/phil/DiffusionSVS/data/gtsinger/Chinese-006/Chinese"
+GTSINGER_JAPANESE_path = "/home/phil/DiffusionSVS/data/gtsinger/Japanese-008/Japanese"
+AMABOSHI_CIPHERDB_path = "/home/phil/DiffusionSVS/data/Amaboshi_CipherDB2改"
+KUROTAKE_KOUGA_AI_SONG_path = "/home/phil/DiffusionSVS/data/Kurotake_Kouga_AI_Song"
+OFUTON_P_UTAGOE_DB_path = "/home/phil/DiffusionSVS/data/OFUTON_P_UTAGOE_DB"
+ONIKU_KURUMI_UTAGOE_DB_path = "/home/phil/DiffusionSVS/data/ONIKU_KURUMI_UTAGOE_DB"
+PJS_CORPUS_path = "/home/phil/DiffusionSVS/data/PJS_corpus_ver1.1"
+ENUNU_KODOKU_path = "/home/phil/DiffusionSVS/data/enunu_kodoku_database"
+ITAKO_SINGING_path = "/home/phil/DiffusionSVS/data/itako_singing"
+NIT070_DB_path = "/home/phil/DiffusionSVS/data/Nit070"
+TIGER_EN_path = "/home/phil/DiffusionSVS/data/tiger_en"
+TIGER_JP_path = "/home/phil/DiffusionSVS/data/tiger_jp"
+
+
+test_ids = [
+    ["popcs", "popcs-说散就散/0000"],
+    ["popcs", "popcs-说散就散/0001"],
+    ["popcs", "popcs-说散就散/0002"],
+    ["popcs", "popcs-说散就散/0003"],
+    ["popcs", "popcs-说散就散/0004"],
+    ["popcs", "popcs-说散就散/0005"],
+    ["popcs", "popcs-说散就散/0006"],
+    ["popcs", "popcs-说散就散/0007"],
+    ["popcs", "popcs-说散就散/0008"],
+    ["popcs", "popcs-说散就散/0009"],
+    ["popcs", "popcs-说散就散/0010"],
+    ["popcs", "popcs-说散就散/0011"],
+    ["popcs", "popcs-说散就散/0012"],
+    ["popcs", "popcs-说散就散/0013"],
+    ["popcs", "popcs-说散就散/0014"],
+    ["popcs", "popcs-说散就散/0015"],
+    ["popcs", "popcs-隐形的翅膀/0000"],
+    ["popcs", "popcs-隐形的翅膀/0001"],
+    ["popcs", "popcs-隐形的翅膀/0002"],
+    ["popcs", "popcs-隐形的翅膀/0003"],
+    ["popcs", "popcs-隐形的翅膀/0004"],
+    ["popcs", "popcs-隐形的翅膀/0005"],
+    ["popcs", "popcs-隐形的翅膀/0006"],
+    ["popcs", "popcs-隐形的翅膀/0007"],
+    ["popcs", "popcs-隐形的翅膀/0008"],
+    ["popcs", "popcs-隐形的翅膀/0009"],
+    ["popcs", "popcs-隐形的翅膀/0010"],
+]
+
+val_ids = [
+    ["popcs", "popcs-夏天的风/0000"],
+    ["popcs", "popcs-夏天的风/0001"],
+    ["popcs", "popcs-夏天的风/0002"],
+    ["popcs", "popcs-夏天的风/0003"],
+    ["popcs", "popcs-夏天的风/0004"],
+    ["popcs", "popcs-夏天的风/0005"],
+    ["popcs", "popcs-夏天的风/0006"],
+    ["popcs", "popcs-夏天的风/0007"],
+    ["popcs", "popcs-夏天的风/0008"],
+    ["popcs", "popcs-夏天的风/0009"],
+    ["popcs", "popcs-夏天的风/0010"],
+    ["popcs", "popcs-夏天的风/0011"],
+    ["popcs", "popcs-夏天的风/0012"],
+    ["popcs", "popcs-稻香/0000"],
+    ["popcs", "popcs-稻香/0001"],
+    ["popcs", "popcs-稻香/0002"],
+    ["popcs", "popcs-稻香/0003"],
+    ["popcs", "popcs-稻香/0004"],
+    ["popcs", "popcs-稻香/0005"],
+    ["popcs", "popcs-稻香/0006"],
+    ["popcs", "popcs-稻香/0007"],
+    ["popcs", "popcs-稻香/0008"],
+    ["popcs", "popcs-稻香/0009"],
+    ["popcs", "popcs-稻香/0010"],
+]

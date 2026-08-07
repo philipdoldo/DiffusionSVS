@@ -11,7 +11,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from pathlib import Path
 from model import MusicScoreEncoder, AuxiliaryDecoder, WaveNet, EncoderDecoder, WaveNetDenoiser, DiT
 from exponential_moving_average import ExponentialMovingAverage
-from data.dataloader import NaiveDataLoader
+from dataloader import NaiveDataLoader
 from loss_functions import get_loss_function
 from muon import Muon
 from functools import partial
