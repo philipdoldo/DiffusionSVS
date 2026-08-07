@@ -7,17 +7,17 @@ Project AI❤dol [PROJECT_AIDOL_PUBLIC_ENGLISH] : https://github.com/lottev1991/
 Nangong Yan & Yu [NGYY] : https://github.com/CylnaNangong/NGYY_ENG_Dataset/archive/refs/heads/main.zip
 *OpenCPOP [OPEN_CPOP] : TODO requires filling out google form and they don't want the link shared without informing them? https://wenet-e2e.github.io/opencpop/download/ -- the only .zip that matters is `segments.zip` and just unzip it into some opencpop dir you create (name isn't important), it'll give some text files (notably `transcriptions.txt`) and create a subdir called `wavs` 
 M4Singer [M4SINGER] : https://drive.google.com/file/d/1xC37E59EWRRFFLdG3aJkVqwtLDgtFNqW/view?usp=share_link
-**No.7 [NO7SINGING] : TODO requires twitter login? seems kinda sketchy https://voiceseven.com/7dev/login.php
+**No.7 [NO7SINGING] : TODO requires twitter login? seems kinda sketchy https://voiceseven.com/7dev/login.php -- can use this google drive link: https://drive.google.com/file/d/1vy20Uh0qoxnSRU2RRrawdTSinrZHZJFV/view?usp=sharing
 Namine Ritsu [RITSU] : https://drive.google.com/file/d/1kXkbOithwn6BkAVLfZ1r1tU-2Kn_HMkb/view?usp=drive_link -- need to store this in e.g. `/ritsu/「波音リツ」歌声データベースVer2.0.2`, i.e. create a directory `ritsu` to then store what you downloaded inside of it, it seems svs_datasets only uses Ver2.0.2
 PopCS [POPCS] : https://drive.google.com/file/d/1uFJmPEUWbzguGBdiuupYvYbBEjopN-Xq/view?usp=sharing
 **??? [SUNG_AND_SPOKEN] : idk I can't find it? not listed in https://github.com/openvpi/MakeDiffSinger/wiki/Public-datasets
 GTSinger [GTSINGER_CHINESE, GTSINGER_ENGLISH, GTSINGER_JAPANESE] : https://drive.google.com/drive/folders/1xcdvCxNAEEfJElt7sEP-xT8dMKxn1_Lz
 Amaboshi Cipher [AMABOSHI_CIPHERDB] : you have to go here https://bowlroll.net/file/268697 and click the Download button -- can instead use https://drive.google.com/file/d/1xfQuL9om6z08tU1NP35QESkyIHdmAhnm/view?usp=sharing
 Kurotake Kouga [KUROTAKE_KOUGA_AI_SONG] : https://drive.google.com/file/d/1fHcvanFSDQEdse2onG_DyYHiB6ZdI1Jn/view
-Ofuton P [OFUTON_P_UTAGOE_DB] : go to think link and click Download https://www.dropbox.com/scl/fi/vnz3v19hzdvq085t9r0th/OFUTON_P_UTAGOE_DB.zip?rlkey=0qv5ewcoeqquejiefa582nd5a&e=1&dl=0 
+Ofuton P [OFUTON_P_UTAGOE_DB] : go to this link and click Download https://www.dropbox.com/scl/fi/vnz3v19hzdvq085t9r0th/OFUTON_P_UTAGOE_DB.zip?rlkey=0qv5ewcoeqquejiefa582nd5a&e=1&dl=0 (you can also wget this link and then unzip the result)
 Oniku Kurumi [ONIKU_KURUMI_UTAGOE_DB] : https://drive.google.com/file/d/17VOlqPKT7ssnOTCp6_ZBIWht1-h8FAt7/view?usp=sharing
 PJS [PJS_CORPUS] : https://drive.google.com/file/d/1hPHwOkSe2Vnq6hXrhVtzNskJjVMQmvN_/view?usp=sharing -- you need to make an extra subdir, e.g. I store it at `/DiffusionSVS/data/PJS_corpus_ver1.1/PJS_corpus_ver1.1` and then I call `load_dataset(Dataset.PJS_CORPUS, "/DiffusionSVS/data/PJS_corpus_ver1.1")`
 **ENUNU Kodoku Project [ENUNU_KODOKU] : no .wav files?? https://github.com/oatsu-gh/enunu_kodoku_singing/tree/main
-**Itako [ITAKO_SINGING] : TODO requires twitter login? seems kinda sketchy https://zunko.jp/itadev/login.php
+**Itako [ITAKO_SINGING] : TODO requires twitter login? seems kinda sketchy https://zunko.jp/itadev/login.php -- can use google drive link: https://drive.google.com/file/d/1M7YZH0bREjy_KdNOrSoc-ZiBL1Ewt60B/view?usp=sharing
 Nit070 [NIT070_DB] : https://drive.google.com/file/d/1eFYk4HO8JzzkFYpBIzzW7WKsHNFXW-Nh/view -- note: `7z x ./nit070_db.7z` will dump the files in the current working directory, so good to create a subdir to dump them in first
 **??? [TIGER_EN, TIGER_JP] : idk I can't find it? not listed in https://github.com/openvpi/MakeDiffSinger/wiki/Public-datasets
