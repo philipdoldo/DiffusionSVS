@@ -9,6 +9,7 @@ import toml
 import json
 import h5py
 import os
+import pprint
 from datetime import datetime
 from pathlib import Path
 from tqdm import tqdm
@@ -389,6 +390,7 @@ def binarize_split(
                 )
             except BinarizationError as e:
                 log_and_print(f"skipping {example.source_dataset}/{example.utterance_id}: {e}", log_file=log_file)
+                log_and_print(example, log_file=log_file, pretty=True)
                 skipped.append(example.utterance_id)
                 continue
 
@@ -503,8 +505,10 @@ def is_paired_speech(example: CanonicalExample) -> bool:
     return example.source_dataset in gtsinger_datasets and "Paired_Speech_Group" in example.utterance_id
 
 
-def log_and_print(text, log_file):
+def log_and_print(text, log_file, pretty=False):
     """`text` is a string to print and write to the log file"""
+    if pretty:
+        text = pprint.pformat(text)
     print(text)
     with open(log_file, 'a') as f:
         f.write(text + "\n")
