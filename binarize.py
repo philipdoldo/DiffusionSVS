@@ -21,7 +21,7 @@ EOS_TOKEN = "<EOS>"
 
 
 
-def get_dataset_paths(config, log_file):
+def get_dataset_paths(config, log_file=None):
     """
     Reads a config for the paths to every dataset handled by `svs_datasets`, returns a dict
     If a dataset path is None, prints a warning.
@@ -105,27 +105,30 @@ def build_phoneme_vocab(examples: list[CanonicalExample], save_dir: Path, log_fi
     log_and_print(f"saved to {save_path}", log_file=log_file)
     return vocab
 
-def build_splits(examples: list[CanonicalExample], save_dir: Path, val_ids: list[tuple[str, str]], test_ids: list[tuple[str, str]], log_file) -> dict[str, list[CanonicalExample]]:
+def build_splits(examples: list[CanonicalExample], save_dir: Path, val_paths: list[str], test_paths: list[str], log_file) -> dict[str, list[CanonicalExample]]:
     """
-    val_ids/test_ids are lists of (source_dataset, utterance_id) pairs, e.g. ('popcs', 'popcs-Bad/0000').
+    val_paths/test_paths are lists of audio_path strings (unique per example).
     """
-    val_ids = set(val_ids)
-    test_ids = set(test_ids)
+    if len(val_paths) != len(set(val_paths)):
+        raise ValueError(f"{len(val_paths)=}, {len(set(val_paths))=}")
+    if len(test_paths) != len(set(test_paths)):
+            raise ValueError(f"{len(test_paths)=}, {len(set(test_paths))=}")
     splits = {"train": [], "val": [], "test": []}
 
     for ex in examples:
-        key = (ex.source_dataset, ex.utterance_id)
-        if key in test_ids:
+        if ex.audio_path in test_paths:
             splits["test"].append(ex)
-        elif key in val_ids:
+        elif ex.audio_path in val_paths:
             splits["val"].append(ex)
         else:
             splits["train"].append(ex)
 
     save_dir.mkdir(parents=True, exist_ok=True)
     with open(save_dir / "splits.json", "w", encoding="utf-8") as f:
-        json.dump({split: [[ex.source_dataset, ex.utterance_id] for ex in split_examples]
-                   for split, split_examples in splits.items()}, f, ensure_ascii=False, indent=2)
+        json.dump({split: [ex.audio_path for ex in split_examples] for split, split_examples in splits.items()}, f, ensure_ascii=False, indent=2)
+
+    if (len(splits["test"]) != len(test_paths)) or (len(splits["val"]) != len(val_paths)):
+        raise ValueError(f"{len(splits["test"])=}, {len(test_paths)=}, {len(splits["val"])=}, {len(val_paths)=}")
 
     for split, split_examples in splits.items():
         log_and_print(f"{split:>5}: {len(split_examples)} utterances", log_file=log_file)
@@ -505,13 +508,14 @@ def is_paired_speech(example: CanonicalExample) -> bool:
     return example.source_dataset in gtsinger_datasets and "Paired_Speech_Group" in example.utterance_id
 
 
-def log_and_print(text, log_file, pretty=False):
+def log_and_print(text, log_file=None, pretty=False):
     """`text` is a string to print and write to the log file"""
     if pretty:
         text = pprint.pformat(text)
     print(text)
-    with open(log_file, 'a') as f:
-        f.write(text + "\n")
+    if log_file is not None:
+        with open(log_file, 'a') as f:
+            f.write(text + "\n")
 
 if __name__ == "__main__":
 
@@ -532,8 +536,6 @@ if __name__ == "__main__":
         f.write("") # initialize log file
 
     dataset_paths = get_dataset_paths(config['data'], log_file=log_file)
-    val_ids = [tuple(pair) for pair in config['data']["val_ids"]]
-    test_ids = [tuple(pair) for pair in config['data']["test_ids"]]
 
     examples = collect_examples(dataset_paths)
     n_before = len(examples)
@@ -545,8 +547,8 @@ if __name__ == "__main__":
     splits = build_splits(
         examples=examples,
         save_dir=save_dir,
-        val_ids=val_ids,
-        test_ids=test_ids,
+        val_ids=config['data']["val_paths"],
+        test_ids=config['data']["test_paths"],
         log_file=log_file
     )
 
