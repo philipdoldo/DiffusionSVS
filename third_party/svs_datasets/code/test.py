@@ -1,0 +1,28 @@
+from preprocessing import Dataset, load_dataset
+
+root = "/mnt/t/svs/phoneme_f0_extraction/singing/"
+
+# x = load_dataset(Dataset.M4SINGER, f"{root}zh/m4singer")
+# x = load_dataset(Dataset.ALEX_FLOAREA_AI_SVS, f"{root}en/AlexFloarea-AI-SVS")
+# x = load_dataset(Dataset.PROJECT_AIDOL_PUBLIC_ENGLISH, f"{root}en/Project-AIdol-Public-English-Dataset")
+# x = load_dataset(Dataset.NGYY, f"{root}en/NGYY_ENG_Dataset")
+# x = load_dataset(Dataset.OPEN_CPOP, f"{root}zh/opencpop")
+# x = load_dataset(Dataset.M4SINGER, f"{root}zh/m4singer")
+# x = load_dataset(Dataset.NO7SINGING, f"{root}zh/no7singing")
+# x = load_dataset(Dataset.RITSU, f"{root}jp/ritsu")
+# x = load_dataset(Dataset.POPCS, f"{root}zh/popcs")
+# x = load_dataset(Dataset.SUNG_AND_SPOKEN, f"{root}en/sungandspoken")
+x = load_dataset(Dataset.GTSINGER_CHINESE, f"{root}zh/GTSinger_Chinese")
+# x = load_dataset(Dataset.GTSINGER_ENGLISH, f"{root}en/GTSinger_English")
+# x = load_dataset(Dataset.GTSINGER_JAPANESE, f"{root}jp/GTSinger_Japanese")
+# x = load_dataset(Dataset.AMABOSHI_CIPHERDB, f"{root}jp/Amaboshi_CipherDB")
+# x = load_dataset(Dataset.KUROTAKE_KOUGA_AI_SONG, f"{root}jp/Kurotake_Kouga_AI_Song")
+# x = load_dataset(Dataset.OFUTON_P_UTAGOE_DB, f"{root}jp/OFUTON_P_UTAGOE_DB")
+# x = load_dataset(Dataset.ONIKU_KURUMI_UTAGOE_DB, f"{root}jp/ONIKU_KURUMI_UTAGOE_DB")
+# x = load_dataset(Dataset.PJS_CORPUS, f"{root}jp/PJS_corpus_ver1.1")
+# x = load_dataset(Dataset.ENUNU_KODOKU, f"{root}jp/enunu_kodoku_database_20220807-2")
+# x = load_dataset(Dataset.ITAKO_SINGING, f"{root}jp/itako_singing")
+# x = load_dataset(Dataset.NIT070_DB, f"{root}jp/nit070_db")
+# x = load_dataset(Dataset.TIGER_EN, f"{root}en/tiger_en")
+# x = load_dataset(Dataset.TIGER_JP, f"{root}jp/tiger_jp")
+print(x[1])
