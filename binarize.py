@@ -547,8 +547,8 @@ if __name__ == "__main__":
     splits = build_splits(
         examples=examples,
         save_dir=save_dir,
-        val_ids=config['data']["val_paths"],
-        test_ids=config['data']["test_paths"],
+        val_paths=config['data']["val_paths"],
+        test_paths=config['data']["test_paths"],
         log_file=log_file
     )
 
