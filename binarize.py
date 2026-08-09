@@ -156,6 +156,13 @@ def process_utterance(
     audio, sr = librosa.load(example.audio_path, sr=None, mono=True)
     if sr != audio_config["sample_rate"]:
         audio = librosa.resample(audio, orig_sr=sr, target_sr=audio_config["sample_rate"], res_type="kaiser_best")
+
+    # truncate to the annotation's declared extent -- some datasets (e.g. ritsu) have
+    # trailing unannotated audio (silence) well beyond the last phoneme interval's end_sec
+    last_end_sample = int(np.round(example.phone_intervals[-1].end_sec * audio_config["sample_rate"]))
+    if last_end_sample < len(audio):
+        audio = audio[:last_end_sample]
+    
     audio = audio / (np.abs(audio).max() + 1e-8)
 
     # ------------------------------------------------------------------
@@ -392,7 +399,7 @@ def binarize_split(
                     config=config,
                 )
             except BinarizationError as e:
-                log_and_print(f"skipping {example.source_dataset}/{example.utterance_id}: {e}", log_file=log_file)
+                log_and_print(f"skipping {example.source_dataset}/{example.utterance_id} [{example.audio_path}]: {e}", log_file=log_file)
                 log_and_print(example, log_file=log_file, pretty=True)
                 skipped.append(example.utterance_id)
                 continue
@@ -400,8 +407,14 @@ def binarize_split(
             segments = split_features(result, example.phone_intervals, boundaries)
 
             for seg in segments:
+
                 item_id = f"{counter:0{id_width}d}"
                 counter += 1
+
+                # sanity check that the duration of each segment is below the maximum number of seconds
+                segment_dur = seg["end_sec"] - seg["start_sec"] # for sanity check
+                if segment_dur > max_sec:
+                    raise ValueError(f"{segment_dur=}, {max_sec=}, {seg['segment_index']=}, {seg['mel'].shape=}, {counter=}, {item_id=}")
 
                 grp = f.create_group(item_id)
                 grp.attrs["source_dataset"] = example.source_dataset
