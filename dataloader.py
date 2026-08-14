@@ -189,7 +189,7 @@ class NaiveDataLoader:
                     batch['epsilon'].append(torch.randn_like(_mel))
 
         self.current_position += self.batch_size * self.world_size
-        if self.current_position + self.batch_size * self.world_size >= len(self.utterances):
+        if self.current_position >= len(self.utterances):
             self.reset()
 
         if self.diffusion_k is not None:
