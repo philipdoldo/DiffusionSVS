@@ -417,6 +417,7 @@ def binarize_split(
                     raise ValueError(f"{segment_dur=}, {max_sec=}, {seg['segment_index']=}, {seg['mel'].shape=}, {counter=}, {item_id=}")
 
                 grp = f.create_group(item_id)
+                grp.attrs["audio_path"]     = example.audio_path
                 grp.attrs["source_dataset"] = example.source_dataset
                 grp.attrs["utterance_id"]   = example.utterance_id
                 grp.attrs["segment_index"]  = seg["segment_index"]
@@ -428,7 +429,7 @@ def binarize_split(
                 grp.create_dataset("mel2ph",     data=seg["mel2ph"])
                 grp.create_dataset("txt_tokens", data=seg["txt_tokens"])
                 successful.append({
-                    "id": item_id, "source_dataset": example.source_dataset,
+                    "id": item_id, "source_dataset": example.source_dataset, "audio_path": example.audio_path,
                     "utterance_id": example.utterance_id, "segment_index": seg["segment_index"],
                     "start_sec": seg["start_sec"], "end_sec": seg["end_sec"],
                 })
