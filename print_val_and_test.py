@@ -16,6 +16,7 @@ def get_specific_examples(examples, dirs):
         for x in specific_examples:
             s += f'"{x.audio_path}",\n'
             #s += f'["{x.source_dataset}", "{x.utterance_id}"],\n' # this is outdated, never use this because utterance_id isn't unique per dataset
+        print(f"added {len(specific_examples)} examples")
         return s
 
 if __name__ == "__main__":
@@ -30,8 +31,6 @@ if __name__ == "__main__":
 
     datasets = [Dataset.POPCS, Dataset.GTSINGER_ENGLISH, Dataset.GTSINGER_JAPANESE]
 
-    base_dir = "/home/phil/DiffusionSVS/data"
-
     test_string = ""
     val_string = ""
 
@@ -43,11 +42,11 @@ if __name__ == "__main__":
         assert len(examples) > 0
 
         if dataset == Dataset.GTSINGER_ENGLISH:
-            test_dirs = [f"English-005/English/EN-Tenor-1/Vibrato/You Belong With Me/Vibrato_Group", "gtsinger/English-005/English/EN-Alto-2/Pharyngeal/You Raise Me Up/Pharyngeal_Group"]#"/home/phil/DiffusionSVS/data/gtsinger/English-005/English/EN-Alto-2/Pharyngeal/Young And Beautiful/Pharyngeal_Group"]
-            val_dirs = ["gtsinger/English-005/English/EN-Alto-1/Glissando/trouble is a friend/Glissando_Group", "gtsinger/English-005/English/EN-Alto-2/Breathy/My Love/Breathy_Group"]# "/home/phil/DiffusionSVS/data/gtsinger/English-005/English/EN-Alto-2/Breathy/Safe and Sound/Breathy_Group"]
+            test_dirs = ["GTSinger/English/EN-Tenor-1/Vibrato/You Belong With Me/Vibrato_Group", "GTSinger/English/EN-Alto-2/Pharyngeal/You Raise Me Up/Pharyngeal_Group"]#"/home/phil/DiffusionSVS/data/gtsinger/English-005/English/EN-Alto-2/Pharyngeal/Young And Beautiful/Pharyngeal_Group"]
+            val_dirs = ["GTSinger/English/EN-Alto-1/Glissando/trouble is a friend/Glissando_Group", "GTSinger/English/EN-Alto-2/Breathy/My Love/Breathy_Group"]# "/home/phil/DiffusionSVS/data/gtsinger/English-005/English/EN-Alto-2/Breathy/Safe and Sound/Breathy_Group"]
         elif dataset == Dataset.GTSINGER_JAPANESE:
-            test_dirs = ["gtsinger/Japanese-008/Japanese/JA-Tenor-1/Vibrato/πüòπéôπü╗πéÜ/Vibrato_Group", "gtsinger/Japanese-008/Japanese/JA-Tenor-1/Pharyngeal/πüòπéôπü╗πéÜ/Pharyngeal_Group"]
-            val_dirs = ["gtsinger/Japanese-008/Japanese/JA-Soprano-1/Mixed_Voice_and_Falsetto/Φíîπüïπü¬πüäπüªπéÖ/Falsetto_Group", "gtsinger/Japanese-008/Japanese/JA-Soprano-1/Glissando/Σ╜òΦë▓πüªπéÖπééπü¬πüäΦè▒/Glissando_Group"]
+            test_dirs = ["GTSinger/Japanese/JA-Tenor-1/Vibrato/銀の龍の背に乗って/Vibrato_Group", "GTSinger/Japanese/JA-Tenor-1/Pharyngeal/銀の龍の背に乗って/Pharyngeal_Group"]
+            val_dirs = ["GTSinger/Japanese/JA-Soprano-1/Mixed_Voice_and_Falsetto/风になる/Falsetto_Group", "GTSinger/Japanese/JA-Soprano-1/Glissando/风になる/Glissando_Group"]
         elif dataset == Dataset.POPCS:
             test_dirs = ["popcs/popcs-说散就散", "popcs/popcs-隐形的翅膀"]
             val_dirs = ["popcs/popcs-夏天的风", "popcs/popcs-稻香"]
